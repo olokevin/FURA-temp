@@ -12,7 +12,7 @@ export HF_HOME="${HF_HOME:-/data/yequan/huggingface/cache}"      # MODIFY THIS L
 
 # PROJECT_DIR is the worktree root (uv venv lives at $PROJECT_DIR/.venv).
 # SRC_DIR is the LIFT directory (where bash_scripts/ and src/ live).
-PROJECT_DIR="${PROJECT_DIR:-/home/yequan/Project/lora/lora-without-regret/.worktrees/qfura}"
+PROJECT_DIR="${PROJECT_DIR:-/home/yequan/Project/lora/lora-without-regret}"
 SRC_DIR="${SRC_DIR:-${PROJECT_DIR}/ref/LIFT}"
 DATA_DIR="${DATA_DIR:-/data/ruijiezhang/llm-adapter_bp/LLM-Adapters}"
 OUTPUT_SRC_DIR="${OUTPUT_SRC_DIR:-/data/yequan/fura/lift}"

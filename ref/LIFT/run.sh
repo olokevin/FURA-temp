@@ -21,7 +21,7 @@ CUDA_VISIBLE_DEVICES=5 lr=1e-4 decomp_mode=output_one_block s_merged_to=keep_tra
 # CUDA_VISIBLE_DEVICES=0 lr=2e-4 decomp_mode=output_one_block s_merged_to=keep_trainable seed=100 bash bash_scripts/finetune_commonsense_blocktt.sh
 
 ## llama-2-7b
-# CUDA_VISIBLE_DEVICES=4 MODEL=meta-llama/Llama-2-7b-hf lr=1e-4 decomp_mode=output_one_block s_merged_to=keep_trainable bash bash_scripts/finetune_commonsense_blocktt.sh 
+# CUDA_VISIBLE_DEVICES=4 MODEL=meta-llama/Llama-2-7b-hf lr=2e-4 decomp_mode=output_one_block s_merged_to=keep_trainable bash bash_scripts/finetune_commonsense_blocktt.sh 
 
 ### eval
 

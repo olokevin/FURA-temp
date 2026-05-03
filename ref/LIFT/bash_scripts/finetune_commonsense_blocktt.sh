@@ -99,10 +99,30 @@ accelerate launch \
     # --eval_step 400 \
 
 if [ "${MAX_STEPS}" = "0" ]; then
-    bash ./bash_scripts/eval_commonsense.sh \
-        CKPT="$OUTPUT" \
-        base_model="${MODEL}" \
-        wandb_project="${wandb_project}" \
-        wandb_run_name="${run_name}" \
-        wandb_run_id="${wandb_run_id}"
+    # finetune_blocktt.py saves the checkpoint at $OUTPUT/last (and optionally
+    # $OUTPUT/best). Eval each subdir; fall back to the legacy single-eval path
+    # if neither subdir is present.
+    if [ -d "$OUTPUT/last" ]; then
+        bash ./bash_scripts/eval_commonsense.sh \
+            CKPT="$OUTPUT/last" \
+            base_model="${MODEL}" \
+            wandb_project="${wandb_project}" \
+            wandb_run_name="${run_name}-last" \
+            wandb_run_id=""
+        if [ -d "$OUTPUT/best" ]; then
+            bash ./bash_scripts/eval_commonsense.sh \
+                CKPT="$OUTPUT/best" \
+                base_model="${MODEL}" \
+                wandb_project="${wandb_project}" \
+                wandb_run_name="${run_name}-best" \
+                wandb_run_id=""
+        fi
+    else
+        bash ./bash_scripts/eval_commonsense.sh \
+            CKPT="$OUTPUT" \
+            base_model="${MODEL}" \
+            wandb_project="${wandb_project}" \
+            wandb_run_name="${run_name}" \
+            wandb_run_id="${wandb_run_id}"
+    fi
 fi

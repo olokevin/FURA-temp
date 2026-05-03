@@ -253,10 +253,36 @@ def convert_to_qdora_fast(
 
 @torch.no_grad()
 def materialize_qdora_to_linear(model: nn.Module) -> int:
-    """Replace every Qdora4bitLinear with its dense bf16 nn.Linear merge.
+    """Replace every Qdora4bitLinear with its dense bf16 nn.Linear merge,
+    then strip the BitsAndBytes quantization metadata so the saved checkpoint
+    loads as a plain bf16 model.
 
-    Used by the merge tool at end-of-training so the saved checkpoint is a
-    plain HF model.
+    Why we have to strip: after this call there are no quantized parameters
+    left in the module tree, but transformers still has:
+      - `model.config.quantization_config` (a BitsAndBytesConfig) — gets
+        re-serialised into config.json by save_pretrained, which then makes
+        from_pretrained try to re-quantize on load. The dense merged weights
+        end up on `meta` and the next `.to(device)` raises
+        `Cannot copy out of meta tensor`.
+      - `model.hf_quantizer` (a Bnb4BitHfQuantizer) — save_pretrained calls
+        `hf_quantizer.get_state_dict_and_metadata` which can return a
+        `(None, {...})` tuple; downstream code that expects a dict on it can
+        raise `'NoneType' object has no attribute 'to_dict'` on certain
+        save paths (sharded save with PEFT-prepared models is the common
+        trigger we hit during finetune_qdora.py's end-of-training save).
+      - `model.config._pre_quantization_dtype` (a `torch.dtype`) — left
+        behind from the from_pretrained quantize step. Some serialisation
+        paths do not stringify this; downstream JSON dump can raise
+        `TypeError: Object of type dtype is not JSON serializable`.
+      - `model.is_loaded_in_4bit`, `model.is_4bit_serializable` — flag
+        attrs that downstream save logic branches on.
+
+    Removing all four makes the post-materialise model indistinguishable from
+    a regular bf16 HF model for save_pretrained / from_pretrained purposes.
+
+    Used by finetune_qdora.py (qdora_impl=fast) at end-of-training so the
+    eval shells can load the checkpoint with `from_pretrained(...)` directly
+    — no `merge_qlora_for_eval.py` step required.
     """
     replacements = []
     for full_name, module in model.named_modules():
@@ -271,13 +297,17 @@ def materialize_qdora_to_linear(model: nn.Module) -> int:
             parent = getattr(parent, key)
         setattr(parent, path[-1], merged)
 
-    # Strip the BitsAndBytes quantization_config from model.config so the saved
-    # checkpoint loads as a plain bf16 model. Otherwise from_pretrained tries
-    # to reconstruct a 4-bit model and the dense merged weights end up on meta.
-    # Must delattr (not set None): transformers' save_pretrained calls
-    # quantization_config.to_dict() guarded by hasattr — None would crash.
+    # Strip every BitsAndBytes-related attribute. Use __dict__.pop so we
+    # remove instance attributes without touching class-level descriptors
+    # (which are read-only).
     cfg = getattr(model, "config", None)
-    if cfg is not None and hasattr(cfg, "quantization_config"):
-        delattr(cfg, "quantization_config")
+    if cfg is not None:
+        cfg.__dict__.pop("quantization_config", None)
+        cfg.__dict__.pop("_pre_quantization_dtype", None)
+
+    for attr in ("hf_quantizer", "is_loaded_in_4bit", "is_4bit_serializable",
+                 "is_quantized", "_hf_peft_config_loaded"):
+        if attr in getattr(model, "__dict__", {}):
+            model.__dict__.pop(attr, None)
 
     return len(replacements)

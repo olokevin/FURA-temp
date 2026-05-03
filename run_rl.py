@@ -452,10 +452,13 @@ def parse_args(argv=None):
     parser.add_argument(
         "--math-verify-datasets",
         type=str,
-        default="MATH-500,AIME-24,AIME-25,AMC23,Minerva",
+        default="MATH-500,AIME-24,AIME-25,AMC23",
         help=(
             "Comma-separated list of eval dataset names. "
-            "Default: MATH-500,AIME-24,AIME-25,AMC23,Minerva."
+            "Default: MATH-500,AIME-24,AIME-25,AMC23. "
+            "Minerva is supported via the registry but excluded from the default "
+            "because its 272-problem score has shown high run-to-run variance "
+            "that masks method differences; pass it explicitly to opt in."
         ),
     )
     parser.add_argument(
@@ -880,10 +883,11 @@ def compute_run_name(args, mode_info: dict) -> str:
     return f"{args.model_id}_{args.lr:.1e}_{args.train_position}_{args.trainable_type}"
 
 
-def create_run_dir(base_dir: str, train_mode: str, run_name: str) -> str:
-    """Create run directory at runs/{train_mode}/{run_name}-{timestamp}."""
+def create_run_dir(base_dir: str, train_mode: str, run_name: str, model_id: str) -> str:
+    """Create run directory at runs/{model_name}/{train_mode}/{run_name}-{timestamp}."""
     timestamp = time.strftime("%m%d-%H%M%S")
-    run_dir = os.path.join(base_dir, train_mode, f"{run_name}-{timestamp}")
+    model_name = model_id.split("/")[-1]
+    run_dir = os.path.join(base_dir, model_name, train_mode, f"{run_name}-{timestamp}")
     os.makedirs(run_dir)
     return run_dir
 
@@ -1637,7 +1641,7 @@ def main(argv=None):
     print(f"  Warmup steps (derived): {warmup_steps}")
 
     run_name = compute_run_name(args, mode_info)
-    run_dir = create_run_dir(args.base_dir, args.train_mode, run_name)
+    run_dir = create_run_dir(args.base_dir, args.train_mode, run_name, args.model_id)
     print(f"Created: {run_dir}")
 
     maybe_init_wandb(args, run_dir, run_name, mode_info, num_training_steps)

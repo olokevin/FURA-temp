@@ -66,7 +66,7 @@ echo "[eval_math] resolved CKPT=${CKPT} -> MODEL=${MODEL}"
 
 OUTPUT_DIR="${MODEL}/math"
 
-PROJECT_DIR="${PROJECT_DIR:-/home/yequan/Project/lora/lora-without-regret/.worktrees/qfura}"
+PROJECT_DIR="${PROJECT_DIR:-/home/yequan/Project/lora/lora-without-regret}"
 SRC_DIR="${SRC_DIR:-${PROJECT_DIR}/ref/LIFT}"
 DATA_DIR="${DATA_DIR:-/data/ruijiezhang/llm-adapter_bp/LLM-Adapters/dataset}"
 

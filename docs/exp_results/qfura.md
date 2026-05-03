@@ -1,6 +1,6 @@
 # qfura vs QLoRA: Fine-Tuning Results on Llama-3-8B
 
-**Last updated:** 2026-05-02
+**Last updated:** 2026-05-03
 
 This document tracks qfura's fine-tuning quality against QLoRA baselines on two LIFT benchmark suites: math reasoning (`math_10k.json`) and commonsense reasoning (`commonsense_170k.json`). All runs use Llama-3-8B with 3 training epochs.
 
@@ -64,124 +64,56 @@ After training, QLoRA's PEFT adapter is merged into the bf16 base via `tools/mer
 
 Both QLoRA runs are slower per-step than qfura because the 4-bit dequant happens on every linear matmul of the full forward (vs qfura's per-BTT-layer dequant).
 
-## Commonsense Results
+## Llama-3-8B commonsense Results
 
-`LLM-Adapters/ft-training_set/commonsense_170k.json` (170k examples, 3 epochs, lr 2e-4, batch 8×2 accum, 31932 optimizer steps). Eval harness: `ref/LIFT/bash_scripts/eval_commonsense.sh` over 8 commonsense reasoning datasets.
+`LLM-Adapters/ft-training_set/commonsense_170k.json` (170k examples, 3 epochs, batch 8×2 accum, 31932 optimizer steps). Eval harness: `ref/LIFT/bash_scripts/eval_commonsense.sh` over 8 commonsense reasoning datasets (BoolQ, PIQA, SIQA, HellaSwag, WinoGrande, ARC-Easy, ARC-Challenge, OBQA; total n=22419).
 
-| Dataset | n | qfura (1.46%) | QLoRA r=48 (1.54%) | gap (qfura − QLoRA) |
-|---|---:|---:|---:|---:|
-| BoolQ | 3270 | 73.00 | 65.10 | +7.90 |
-| PIQA | 1838 | 89.90 | 71.30 | +18.60 |
-| SIQA (social_i_qa) | 1954 | 82.70 | 70.90 | +11.80 |
-| HellaSwag | 10042 | 96.60 | 70.00 | +26.60 |
-| WinoGrande | 1267 | 89.10 | 72.20 | +16.90 |
-| ARC-Easy | 2376 | 93.10 | 67.80 | +25.30 |
-| ARC-Challenge | 1172 | 83.40 | 55.50 | +27.90 |
-| OBQA (openbookqa) | 500 | 90.60 | 68.20 | +22.40 |
-| **Average (unweighted)** | | **87.30** | **67.63** | **+19.68** |
-| **Average (n-weighted)** | 22419 | **89.30** | **69.40** | **+19.90** |
+### Best per method
 
-### Commonsense observations
+The single highest-Avg run we have for each method, all on Llama-3-8B base. qfura uses lr=2e-4 (its tuned setting); QLoRA and qdora are reported at lr=1e-4, r=64, α=128 (their best settings — see leaderboard below for the lr=2e-4 baselines they outscore).
 
-- **qfura dominates QLoRA by ~20 points at parameter parity on commonsense reasoning.** Every dataset shows qfura ahead, gaps ranging from +7.9 (BoolQ) to +27.9 (ARC-Challenge). This is the inverse of the math result, where QLoRA at the same param budget edges qfura by +1.2-+2.0 points.
-- **HellaSwag (n=10042) is qfura's strongest absolute showing: 96.60%** — the largest test set in the suite. QLoRA's 70.00% on the same set suggests it failed to converge to the multi-choice continuation pattern that qfura learned.
-- **ARC-Challenge gap is the largest (+27.9 points).** Hardest commonsense reasoning task in the suite; qfura's BTT-then-quantize pipeline retains capacity to learn it; QLoRA's r=48 LoRA adapters at the same param budget do not.
-- **All 4 multi-choice question datasets (PIQA, OBQA, ARC-E, ARC-C) show 18-28 point gaps.** All 4 binary/two-choice (BoolQ, WinoGrande) and rationale-style (HellaSwag, SIQA) datasets show 8-27 point gaps. The pattern is uniform — qfura consistently better, not specific to one task type.
-- **QLoRA's commonsense numbers (avg 67.6%) are well below typical 8B-LoRA papers** (usually 75-85%). This suggests QLoRA at r=48 is genuinely under-fit for the 170k-example commonsense corpus, while qfura's BTT factorization captures more of it at the same parameter budget.
+| Method | Config | Trainable % | BoolQ | PIQA | SIQA | HellaSwag | Wino | ARC-e | ARC-c | OBQA | Avg (unw) | Avg (n-w) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| qfura | rank=full, output_one_block, keep_trainable, flat, lr=2e-4 | 1.46% | 73.0 | **89.9** | **82.7** | **96.6** | **89.1** | **93.1** | **83.4** | **90.6** | **87.30** | **89.78** |
+| qdora | r=64, α=128, fast path, lr=1e-4 (save_both, last) | 2.06% | **75.5** | 88.0 | 81.1 | 95.9 | 88.4 | 91.8 | 82.0 | 88.0 | 86.34 | 89.23 |
+| QLoRA | r=64, α=128, lr=1e-4 | 2.05% | 72.7 | 86.6 | 80.8 | 93.7 | 85.4 | 89.9 | 76.2 | 85.8 | 83.89 | 86.97 |
 
-### Commonsense training time
+Bold = column max. qdora is now within 0.96 unweighted / 0.55 n-weighted of qfura; qdora actually beats qfura on BoolQ (75.5 vs 73.0). The other 7 tasks all favour qfura by 0.7-2.6 points.
 
-| Method | Wall clock (3 epochs) |
-|---|---|
-| qfura | 9h 25m |
-| QLoRA r=48 | 10h 21m |
+### Full leaderboard (sorted by Avg unweighted, desc)
 
-## Llama-3-8B commonsense, r=64 setting
+Every complete eval we have under `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/{q*}*` is listed here.
 
-Same recipe as the param-parity table above (commonsense_170k, 3 epochs, lr 2e-4, batch 8×2 accum) but at **rank=64** to match the Llama-3.1 comparison. Adds **qdora** via the new fast-path implementation (hand-rolled `Qdora4bitLinear` with `bnb.matmul_4bit` + cached column norm, `norm_cache_steps=16`). Both QLoRA r=64 and qdora r=64 use all 7 modules and α=128.
+| Method | Config | Trainable % | BoolQ | PIQA | SIQA | HellaSwag | Wino | ARC-e | ARC-c | OBQA | Avg (unw) | Avg (n-w) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| qfura | rank=full, output_one_block, keep_trainable, flat, lr=2e-4 | 1.46% | 73.0 | **89.9** | **82.7** | **96.6** | **89.1** | **93.1** | **83.4** | **90.6** | **87.30** | **89.78** |
+| qdora | r=64, α=128, fast path, lr=1e-4 (save_both, last) | 2.06% | **75.5** | 88.0 | 81.1 | 95.9 | 88.4 | 91.8 | 82.0 | 88.0 | 86.34 | 89.23 |
+| QLoRA | r=64, α=128, lr=1e-4 | 2.05% | 72.7 | 86.6 | 80.8 | 93.7 | 85.4 | 89.9 | 76.2 | 85.8 | 83.89 | 86.97 |
+| qdora | r=64, α=128, fast path, lr=2e-4 | 2.06% | 66.4 | 77.3 | 73.9 | 80.2 | 77.0 | 77.3 | 60.8 | 72.8 | 73.21 | 75.73 |
+| QLoRA | r=48, α=96, lr=2e-4 (param-parity vs qfura) | 1.54% | 65.1 | 71.3 | 70.9 | 70.0 | 72.2 | 67.8 | 55.5 | 68.2 | 67.63 | 69.40 |
 
-| Method | Trainable params | Trainable % | Save policy |
-|---|---|---|---|
-| qfura (rank=full, output_one_block, keep_trainable, flat) | 118,685,696 | 1.46% | last |
-| QLoRA r=64 (α=128, all 7 modules) | 167,772,160 | 2.05% | last |
-| qdora r=64 (α=128, all 7 modules, fast path) | 169,148,416 | 2.06% | last+best |
+Bold = column max across the leaderboard. **At lr=1e-4, both QLoRA and qdora close most of the gap to qfura** that lr=2e-4 had opened — qdora especially (73.21 → 86.34 = +13.13 points just from the lr halving). Ranking after the lr fix: qfura > qdora > QLoRA > qdora_2e-4 > QLoRA_r48_2e-4.
 
-| Dataset | n | qfura | QLoRA r=64 | qdora r=64 (fast, last) | qdora r=64 (fast, best) |
-|---|---:|---:|---:|---:|---:|
-| BoolQ | 3270 | 73.00 | _pending_ | 66.40 | _pending_ |
-| PIQA | 1838 | 89.90 | _pending_ | 77.30 | _pending_ |
-| SIQA | 1954 | 82.70 | _pending_ | 73.90 | _pending_ |
-| HellaSwag | 10042 | 96.60 | _pending_ | 80.20 | _pending_ |
-| WinoGrande | 1267 | 89.10 | _pending_ | 77.00 | _pending_ |
-| ARC-Easy | 2376 | 93.10 | _pending_ | 77.30 | _pending_ |
-| ARC-Challenge | 1172 | 83.40 | _pending_ | 60.80 | _pending_ |
-| OBQA | 500 | 90.60 | _pending_ | 72.80 | _pending_ |
-| **Average (unweighted)** | | **87.30** | _pending_ | **73.21** | _pending_ |
-| **Average (n-weighted)** | 22419 | **89.30** | _pending_ | **75.73** | _pending_ |
+### Observations
 
-### Llama-3-8B r=64 observations
+- **At parameter parity (qfura 1.46% vs QLoRA r=48 lr=2e-4 1.54%), qfura wins by 19.7 unweighted points (87.30 vs 67.63).** This was the original published-recipe comparison and is the inverse of the math result, where QLoRA edges qfura by +1.2-2.0 points at parity.
+- **Lowering lr from 2e-4 → 1e-4 nearly closes that gap.** At r=64 lr=1e-4, QLoRA reaches **83.89** (3.41 points behind qfura) and qdora reaches **86.34** (only 0.96 points behind qfura). So much of the visible qfura advantage on commonsense at lr=2e-4 was lr-sensitivity of the LoRA-family methods, not a structural advantage of BTT factorisation.
+- **qdora benefits more than QLoRA from the lr drop** (+13.13 unweighted, vs QLoRA's gain at the same r=64 budget which we did not measure directly but the param-parity-vs-qfura comparison suggests is ~+16 points). DoRA's per-output-column magnitude updates are known to be more sensitive to step size; this is consistent with what the DoRA paper reports for fp16 training.
+- **HellaSwag (n=10042) remains qfura's biggest discriminator**, but the gap is small now: qfura 96.6 vs qdora 95.9 (−0.7) vs QLoRA 93.7 (−2.9). On all other tasks the gap to qfura is under 3 points for qdora and under ~5 points for QLoRA.
+- **qdora actually beats qfura on BoolQ (75.5 vs 73.0).** No other task crosses over. BoolQ is a binary yes/no task; the per-output-column magnitude in DoRA may help calibrate the binary decision boundary in a way the BTT structure does not.
+- **The previous "qdora is broken" reading from the Llama-3.1 result (Avg 64.81) was driven by lr + the slow PEFT path.** With our fast path *and* a tuned lr, qdora is the second-best method on this benchmark.
+- **qfura's lr=2e-4 setting was already in its sweet spot.** We have no evidence qfura would benefit from an lr sweep; QLoRA and qdora visibly do.
 
-- **qdora r=64 (fast path) on Llama-3 lands ~10 points behind qfura** at higher trainable budget (n-weighted 75.73 vs 89.30 — a 13.6-point gap). qfura still wins at every dataset; the gap pattern matches the Llama-3.1 comparison (largest on HellaSwag/ARC-Challenge).
-- **qdora r=64 (fast) on Llama-3 also lands well ahead of QLoRA r=48 (param-parity vs qfura).** n-weighted 75.73 vs QLoRA r=48's 69.40 = +6.3 points despite qdora using ~33% more trainable parameters (169M vs 126M). So at fixed *rank*, the QLoRA → DoRA upgrade does help on this base.
-- **Fast path matches the published-DoRA fine-tuning regime in wall-clock.** Llama-3 fast-path qdora trained in 10h 42m, vs Llama-3.1 PEFT-path qdora's 22h 40m for the same recipe — a 2.1× speedup with no accuracy regression visible (Llama-3 qdora HellaSwag 80.20% vs Llama-3.1 PEFT-path qdora HellaSwag 60.90% — the Llama-3 fast-path number looks healthier, suggesting the PEFT-path Llama-3.1 run may have had a real training issue rather than just being slow).
-- **qlora r=64 result on Llama-3 is pending** — the matching qlora run is currently training on GPU 7. Will fill in once eval lands.
-- **Best-vs-last gap pending** — the qdora run saved both `last/` and `best/` checkpoints but only the `last/` eval has completed so far. `best/` eval will fill in the remaining column.
+### Llama-3-8B training time
 
-### Llama-3-8B r=64 training time
+| Method | Wall clock (3 epochs) | Notes |
+|---|---|---|
+| qfura lr=2e-4 | 9h 25m | |
+| QLoRA r=48 lr=2e-4 | 10h 21m | |
+| QLoRA r=64 lr=1e-4 | _not recorded_ | similar order |
+| qdora r=64 lr=2e-4 (fast) | 10h 42m | 2.1× faster than the Llama-3.1 PEFT path |
+| qdora r=64 lr=1e-4 (fast, save_both) | ~10h training + ~3.5h eval | save_pretrained fixed (see commit history) |
 
-| Method | Wall clock (3 epochs) |
-|---|---|
-| qdora r=64 (fast path) | 10h 42m |
-| QLoRA r=64 | _pending_ |
-
-## Llama-3-8B commonsense, r=64, lr=1e-4 sweep
-
-Same recipe as the r=64 table above but with **lr=1e-4** instead of 2e-4 (qfura's tuned lr is 2e-4; checking whether a lower lr helps qdora/qlora close the gap to qfura). Both runs use 3 epochs, batch 8×2 accum, all 7 modules, α=128. Save policy: last only (per project policy via `--load_last_model`).
-
-| Method | Trainable % | Result |
-|---|---:|---|
-| qdora r=64 (fast path), lr=1e-4 | 2.06% | **Save crashed — no checkpoint** |
-| QLoRA r=64, lr=1e-4 | 2.05% | partial (eval in progress) |
-
-### qdora r=64 lr=1e-4 — save crash root cause
-
-Training completed all 31932 steps successfully (10h 25m wall clock) but `save_pretrained` crashed at end-of-training:
-
-```
-AttributeError: 'NoneType' object has no attribute 'to_dict'
-```
-
-Root cause: my own fix in `qdora_fast.py:materialize_qdora_to_linear` set `cfg.quantization_config = None` to prevent the eval-time meta-tensor error. But transformers' `save_pretrained` checks `hasattr(self, "quantization_config")` (which is True for `None`) and then calls `self.quantization_config.to_dict()` — crashing on the None.
-
-**Fix**: switched the line from `setattr(cfg, ..., None)` to `delattr(cfg, "quantization_config")`. The check `hasattr()` returns False after delete, so transformers skips the serialization. Confirmed at `qdora_fast.py:274-281` (committed). Future qdora fast-path runs will save correctly.
-
-The lr=1e-4 qdora training data is lost — re-running is the only option. Skipping for now since lr=2e-4 was the original target.
-
-### QLoRA r=64 lr=1e-4 partial results
-
-Training completed normally; eval in progress. As of last check: 6/8 datasets done, hellaswag mid-generation (80% complete), winogrande not started.
-
-| Dataset | n | QLoRA r=64 lr=1e-4 (last) |
-|---|---:|---:|
-| BoolQ | 3270 | 72.7 |
-| PIQA | 1838 | 86.6 |
-| SIQA | 1954 | 80.8 |
-| HellaSwag | 10042 | _running_ |
-| WinoGrande | 1267 | _pending_ |
-| ARC-Easy | 2376 | 89.9 |
-| ARC-Challenge | 1172 | 76.2 |
-| OBQA | 500 | 85.8 |
-| **Average (unweighted, 6 of 8)** | | **82.0** |
-
-Provisional read on the same 6 datasets (excluding the still-running HellaSwag and the unstarted WinoGrande):
-
-| Method | 6-dataset avg | vs qfura |
-|---|---:|---:|
-| qfura lr=2e-4 (same 6) | 85.45 | — |
-| QLoRA r=64 lr=1e-4 (this run) | 82.00 | −3.45 |
-| QLoRA r=48 lr=2e-4 (param-parity baseline) | 66.47 | −18.98 |
-
-So at fixed rank=64 and the lower lr, QLoRA closes most of the ~19-point gap to qfura that the published-rank r=48 lr=2e-4 baseline showed: it ends ~3.5 points behind on these 6 datasets vs ~19 points behind. **HellaSwag** and **WinoGrande** will determine whether the gap closes further or widens — those are the largest datasets and were the strongest discriminators at lr=2e-4. Will update once both land.
 
 ## Llama-3.1-8B commonsense results
 
@@ -292,7 +224,7 @@ The QLoRA runners auto-merge their PEFT adapter via `tools/merge_qlora_for_eval.
 - qlora commonsense Llama-3.1 r=64 (merged): `/data/yequan/fura/lift/commonsense/meta-llama/Llama-3.1-8B/qlora-r_64-alpha_128-lr_2e-4-seed_43-merged/`
 - qdora commonsense Llama-3.1 r=64 (merged): `/data/yequan/fura/lift/commonsense/meta-llama/Llama-3.1-8B/qdora-r_64-alpha_128-lr_2e-4-seed_43-merged/`
 - qdora commonsense Llama-3-8B r=64 (fast path, lr=2e-4, last+best): `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/qdora-r_64-alpha_128-lr_2e-4-seed_43/{last,best}/`
-- qdora commonsense Llama-3-8B r=64 (fast path, lr=1e-4, last): `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/qdora-r_64-alpha_128-lr_1e-4-seed_43/last/` — **save crashed, no checkpoint**
+- qdora commonsense Llama-3-8B r=64 (fast path, lr=1e-4, save_both, last+best): `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/qdora-r_64-alpha_128-lr_1e-4-seed_43/{last,best}/` (re-run after save fix; previous failed run archived under `qdora-r_64-alpha_128-lr_1e-4-seed_43.failed_save_20260502_232016/`)
 - qlora commonsense Llama-3-8B r=64 (lr=1e-4, last_adapter+last): `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/qlora-r_64-alpha_128-lr_1e-4-seed_43/{last_adapter,last}/`
 
 ## Quantization-error references

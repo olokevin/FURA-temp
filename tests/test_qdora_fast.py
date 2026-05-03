@@ -281,5 +281,121 @@ class TestQdora4bitLinearMergeRoundtrip(unittest.TestCase):
         self.assertLess(rel_err.item(), 0.02, f"merge rel_err={rel_err.item():.4f}")
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA required for bnb 4-bit")
+class TestQdora4bitMaterializeStripsBnbState(unittest.TestCase):
+    """End-to-end save+reload regression for fast-path qdora.
+
+    Regression target: a bug observed in May 2026 where
+    `materialize_qdora_to_linear(model)` left `model.config.quantization_config`,
+    `model.hf_quantizer`, and `model.is_loaded_in_4bit` in place. The
+    subsequent `model.save_pretrained(...)` then either:
+      a) wrote a config.json that announced `load_in_4bit=True`, so
+         from_pretrained later re-quantised on load and the merged dense
+         weights ended up on `meta` (eval crashed with
+         "Cannot copy out of meta tensor").
+      b) crashed inside save_pretrained itself with
+         "'NoneType' object has no attribute 'to_dict'" or
+         "Object of type dtype is not JSON serializable", depending on the
+         transformers version and which save sub-path was hit.
+
+    Fix: `materialize_qdora_to_linear` strips every BitsAndBytes metadata
+    attribute (model.hf_quantizer, model.is_loaded_in_4bit,
+    config.quantization_config, config._pre_quantization_dtype, ...) so the
+    post-materialise model is indistinguishable from a regular bf16 model
+    for save_pretrained / from_pretrained purposes. This test verifies the
+    contract end-to-end: convert -> materialise -> save_pretrained ->
+    from_pretrained -> forward. If any of those steps regress, this test
+    fails.
+    """
+
+    def test_materialise_then_save_and_reload(self):
+        import os
+        import shutil
+        import tempfile
+
+        import bitsandbytes as bnb  # noqa: F401  (skipped above if not available)
+        from transformers import (
+            AutoModelForCausalLM,
+            BitsAndBytesConfig,
+            LlamaConfig,
+            LlamaForCausalLM,
+        )
+
+        from qdora_fast import convert_to_qdora_fast, materialize_qdora_to_linear
+
+        tmpdir = tempfile.mkdtemp(prefix="qdora_save_test_")
+        base_dir = os.path.join(tmpdir, "base")
+        save_dir = os.path.join(tmpdir, "merged")
+        try:
+            cfg = LlamaConfig(
+                vocab_size=256, hidden_size=64, intermediate_size=128,
+                num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
+                max_position_embeddings=64, tie_word_embeddings=True,
+            )
+            base_model = LlamaForCausalLM(cfg).to(torch.bfloat16)
+            base_model.save_pretrained(base_dir)
+            del base_model
+
+            bnb_cfg = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                base_dir, quantization_config=bnb_cfg, torch_dtype=torch.bfloat16,
+            )
+
+            for p in model.parameters():
+                p.requires_grad = False
+            convert_to_qdora_fast(
+                model,
+                target_module_names=[
+                    "q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj",
+                ],
+                r=4, lora_alpha=8, lora_dropout=0.0, norm_cache_steps=1,
+            )
+            materialize_qdora_to_linear(model)
+
+            self.assertFalse(
+                getattr(model, "hf_quantizer", None) is not None,
+                "hf_quantizer not stripped",
+            )
+            self.assertFalse(
+                hasattr(model.config, "quantization_config"),
+                "config.quantization_config not stripped",
+            )
+            self.assertFalse(
+                hasattr(model.config, "_pre_quantization_dtype"),
+                "config._pre_quantization_dtype not stripped",
+            )
+
+            model.save_pretrained(save_dir, safe_serialization=True, max_shard_size="5GB")
+            cfg_path = os.path.join(save_dir, "config.json")
+            self.assertTrue(os.path.isfile(cfg_path), "config.json not written")
+            self.assertGreater(os.path.getsize(cfg_path), 0, "config.json is empty")
+
+            import json
+            with open(cfg_path) as fh:
+                saved_cfg = json.load(fh)
+            self.assertNotIn("quantization_config", saved_cfg,
+                             "saved config still claims to be 4-bit")
+
+            del model
+            torch.cuda.empty_cache()
+            reload = AutoModelForCausalLM.from_pretrained(
+                save_dir, torch_dtype=torch.bfloat16, device_map="cuda",
+            )
+            self.assertFalse(
+                getattr(reload, "hf_quantizer", None) is not None,
+                "reloaded model unexpectedly has hf_quantizer (re-quantised on load)",
+            )
+            x = torch.randint(0, 256, (2, 8), device="cuda")
+            out = reload(x)
+            self.assertEqual(out.logits.shape, (2, 8, 256))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
