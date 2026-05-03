@@ -26,8 +26,8 @@ OUTPUT_SRC_DIR=/data/yequan/fura/lift    # MODIFY THIS LINE
 MODEL="${MODEL:-meta-llama/Meta-Llama-3-8B}"
 adapter_name="${adapter_name:-lora}"
 lr="${lr:-2e-4}"
-lora_r="${lora_r:-128}"
-lora_alpha="${lora_alpha:-256}"
+lora_r="${lora_r:-64}"
+lora_alpha="${lora_alpha:-128}"
 seed="${seed:-43}"
 MAX_STEPS="${MAX_STEPS:-0}"
 model_tag="${MODEL##*/}"
@@ -74,7 +74,7 @@ accelerate launch \
     --seed ${seed} \
     --gradient_checkpointing \
     --instruction_type single \
-    ${LOAD_LAST_MODEL:-"--load_last_model"} \
+    --load_last_model \
     --adapter_name ${adapter_name} \
     --lora_r ${lora_r} \
     --lora_alpha ${lora_alpha} \

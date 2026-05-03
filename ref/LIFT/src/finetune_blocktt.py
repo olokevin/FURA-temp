@@ -386,6 +386,11 @@ def main():
             f"right={stats['tuned_right_cores']}, biases={stats['tuned_biases']}"
         )
 
+        if args.train_position == "both":
+            for p in model.parameters():
+                p.requires_grad = True
+            print("[train_position=both] all parameters set trainable (incl. lm_head, embeddings)")
+
     for name, param in model.named_parameters():
         if param.requires_grad:
             print(f"param {name} is trainable")

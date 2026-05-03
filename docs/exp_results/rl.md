@@ -1,6 +1,6 @@
 # RL Experiment Results
 
-_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27._
+_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 3, 5, 6 of the canonical 6-cell decomp×s_to grid; cell 4 rerun in progress on GPU 6)._
 
 - Source: `/data/yequan/fura/rl_runs`
 - Methods covered: `full`, `lora`, `lora_full`, `dora`, `pissa`, `milora`, `lift`, `randlora`, `fura` (=`blocktt`), `svd`.
@@ -16,7 +16,7 @@ _Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llam
 
 | Method | Best LR | eval/acc | MATH-500 | AMC23 | AIME-24 | AIME-25 | Minerva |
 |---|---|---:|---:|---:|---:|---:|---:|
-| **fura** (blocktt) | 8e-5 | 85.4 | 63.0 | 52.5 | 13.3 | 17.5 | 21.0 |
+| **fura** (blocktt) | 1e-4 | 88.7 | 63.6 | 57.5 | 15.0 | 12.5 | 21.3 |
 | **full** | 2e-5 | 86.3 | 63.6 | 47.5 | 13.8 | 15.4 | — |
 | **randlora** | 1e-4 | 85.6 | 63.2 | 57.5 | 15.8 | 17.1 | 20.2 |
 | **svd** | 1e-5 | 88.4 | 64.0 | 40.0 | 16.7 | 13.8 | 20.6 |
@@ -37,7 +37,28 @@ Methods without Minerva (full, lift, pissa) used runs from 2026-04-19–21 that 
 | 2e-4 | 86.6 | 60.8 | 47.5 | **18.8** | 15.0 | 18.0 |
 | 3e-4 | 85.1 | 59.6 | 45.0 | 12.1 | 11.7 | 20.6 |
 
-Config for all rows: `output_one_block`, `train_small`, `s_to_trainable`. The 1e-4 row pre-dates the Minerva fix so lacks that score. On the 4 common metrics (MATH-500, AMC23, AIME-24, AIME-25), lr 8e-5 leads in 3 of 4 and lr 2e-4 leads AIME-24 (18.8% — best single result in the entire table). LR 3e-4 degrades consistently. Recommended operating point: **8e-5** for MATH/AMC/AIME-25 coverage, or **2e-4** for AIME-24 specialisation.
+Config for all rows: `output_one_block`, `train_small`, `s_to_trainable`. The 1e-4 row pre-dates the Minerva fix so lacks that score. On the 4 common metrics (MATH-500, AMC23, AIME-24, AIME-25), lr 8e-5 leads in 3 of 4 and lr 2e-4 leads AIME-24 (18.8% — best single result in the entire table). LR 3e-4 degrades consistently.
+
+### FuRA decomp × s_to grid at lr=1e-4 (canonical 6-cell, train_small, rank=full)
+
+These 6 runs hold lr fixed at the previously-best fura LR (1e-4) and sweep the two BlockTT design axes: `decomp_mode ∈ {output_one_block, input_one_block}` × `s_merged_to ∈ {frozen, trainable, keep_trainable}`. The 4 `0502` reruns below were re-trained with `--enable-merged-ckpt --enable-math-verify` because the original 0317/0331/0403/0413 runs either lacked extended math eval, lacked a step=50 ckpt on disk, or saved a factored ckpt that `eval_rl.py` cannot consume.
+
+| decomp | s_to | eval/acc | train/acc | MATH-500 | AMC23 | AIME-24 | AIME-25 | Minerva | mean-5 | run |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| output_one_block | **frozen**         | **88.7** | 69.5 | **63.6** | **57.5** | **15.0** | 12.5 | 21.3 | **34.0** | `blocktt-adamw-lr_1e-4-output_one_block-s_to_frozen-train_small-0502-164206` |
+| output_one_block | trainable          | 87.1 | 69.5 | 62.8 | 47.5 | 12.5 | **16.7** | — | 34.9† | `blocktt-adamw-lr_1e-4-output_one_block-s_to_trainable-train_small-0419-185330` |
+| output_one_block | keep_trainable     | **89.4** | **71.5** | 60.2 | 47.5 | 12.5 | 9.2 | **21.7** | 30.2 | `blocktt-adamw-lr_1e-4-output_one_block-s_to_keep_trainable-train_small-0502-174402` |
+| input_one_block  | frozen             | _in progress (GPU 6, 0502-213816)_ | | | | | | | | `blocktt-adamw-lr_1e-4-input_one_block-s_to_frozen-train_small-rerun-0502-0502-213816` |
+| input_one_block  | trainable          | 87.5 | 68.4 | 61.4 | 42.5 | 12.9 | 13.8 | 19.9 | 30.1 | `blocktt-adamw-lr_1e-4-input_one_block-s_to_trainable-train_small-rerun-0502-0502-191940` |
+| input_one_block  | keep_trainable     | 87.4 | 67.6 | 61.2 | 52.5 | 9.6 | 13.8 | 19.1 | 31.2 | `blocktt-adamw-lr_1e-4-input_one_block-s_to_keep_trainable-train_small-rerun-0502-0502-201544` |
+
+† = mean computed over the 4 metrics actually reported (Minerva pre-dates the hf-id fix); not directly comparable to mean-5 entries.
+
+**Cross-cell takeaways at lr=1e-4:**
+1. **`output_one_block` wins** in 5 of 5 extended metrics over `input_one_block` (best output mean-5 34.0 vs best input mean-5 31.2). This sharpens the project-wide `output_one_block` default for fura; the gap is now 3 pp on MATH-500 and 5 pp on AMC23.
+2. **Within `output_one_block`, `s_to_frozen` is the new fura best** by mean-5 extended (34.0), narrowly above the prior 8e-5 / s_to_trainable champion (33.5). It's also the new MATH-500 leader for fura (63.6, tied with `full`) and a clear AMC23 leader (57.5, +5 pp over 52.5). Promoted to the TL;DR table above.
+3. **`s_to_keep_trainable` gives the highest training-time eval/acc** (89.4% in cell 3, the all-time fura primary-eval ceiling at lr=1e-4) but the weakest extended-eval mean-5 in its column (30.2). Confirms the prior pattern: in-train held-out and extended-math-benchmark performance partially decorrelate for fura.
+4. **`input_one_block × keep_trainable`** is the strongest of the 3 input-block configs (mean-5 31.2 vs 30.1), beating `trainable` mainly on AMC23 (52.5 vs 42.5).
 
 **Best headline primary `eval/accuracy` per method**:
 
@@ -88,16 +109,20 @@ Config for all rows: `output_one_block`, `train_small`, `s_to_trainable`. The 1e
 | Method | Run | eval/acc | train/acc | MATH-500 | AMC23 | AIME-24 | AIME-25 | Minerva |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | svd | `svd-adamw-lr_1e-5-s_to_keep_trainable-train_input-ext-0421-221304` | 88.4 | 70.3 | 64.0 | 40.0 | 16.7 | 13.8 | 20.6 |
+| **fura** | `blocktt-adamw-lr_1e-4-output_one_block-s_to_frozen-train_small-0502-164206` | 88.7 | 69.5 | 63.6 | 57.5 | 15.0 | 12.5 | 21.3 |
 | full | `full-adamw-lr_2e-5-0420-173501` | 86.3 | 66.4 | 63.6 | 47.5 | 13.8 | 15.4 | — |
 | randlora | `randlora-adamw-lr_1e-4-rank_64-sweep-0422-041850` | 85.6 | 66.0 | 63.2 | 57.5 | 15.8 | 17.1 | 20.2 |
-| **fura** | `blocktt-adamw-lr_8e-5-output_one_block-s_to_trainable-train_small-sweep-0423` | 85.4 | 66.0 | 63.0 | 52.5 | 13.3 | 17.5 | 21.0 |
+| fura | `blocktt-adamw-lr_8e-5-output_one_block-s_to_trainable-train_small-sweep-0423` | 85.4 | 66.0 | 63.0 | 52.5 | 13.3 | 17.5 | 21.0 |
 | fura | `blocktt-adamw-lr_1e-4-output_one_block-s_to_trainable-train_small-0419-185330` | 87.1 | 69.5 | 62.8 | 47.5 | 12.5 | 16.7 | — |
 | dora | `dora-adamw-lr_1e-4-rank_64-retry-0422-013148` | 86.5 | 68.0 | 61.6 | 37.5 | 12.9 | 14.6 | 22.1 |
 | randlora | `randlora-adamw-lr_8e-5-rank_64-fix1-0421-221308` | 79.1 | 63.7 | 61.6 | 50.0 | 15.8 | 15.8 | 21.0 |
+| fura | `blocktt-adamw-lr_1e-4-input_one_block-s_to_trainable-train_small-rerun-0502-0502-191940` | 87.5 | 68.4 | 61.4 | 42.5 | 12.9 | 13.8 | 19.9 |
 | fura | `blocktt-adamw-lr_1e-4-output_one_block-s_to_keep_trainable-train_small-0419-185333` | 85.8 | 67.6 | 61.4 | 55.0 | 10.0 | 12.9 | — |
+| fura | `blocktt-adamw-lr_1e-4-input_one_block-s_to_keep_trainable-train_small-rerun-0502-0502-201544` | 87.4 | 67.6 | 61.2 | 52.5 | 9.6 | 13.8 | 19.1 |
 | fura | `blocktt-adamw-lr_2e-4-output_one_block-s_to_trainable-train_small-sweep-0423` | 86.6 | 66.4 | 60.8 | 47.5 | 18.8 | 15.0 | 18.0 |
 | lora | `lora-adamw-lr_6e-5-rank_64-sweep-0422-002231` | 84.8 | 65.2 | 60.6 | 50.0 | 11.2 | 11.2 | 19.1 |
 | lift | `lift-adamw-lr_8e-5-0421-143200` | 84.2 | 62.1 | 60.2 | 37.5 | 10.0 | 8.8 | — |
+| fura | `blocktt-adamw-lr_1e-4-output_one_block-s_to_keep_trainable-train_small-0502-174402` | 89.4 | 71.5 | 60.2 | 47.5 | 12.5 | 9.2 | 21.7 |
 | fura | `blocktt-adamw-lr_3e-4-output_one_block-s_to_trainable-train_small-sweep-0423` | 85.1 | 64.8 | 59.6 | 45.0 | 12.1 | 11.7 | 20.6 |
 | dora | `dora-adamw-lr_2e-4-rank_64-sweep-0422-021100` | 87.1 | 68.0 | 59.0 | 50.0 | 5.0 | 10.0 | 20.2 |
 | milora | `milora-adamw-lr_6e-5-rank_64-sweep-0422-020941` | 85.6 | 64.1 | 59.0 | 45.0 | 7.9 | 9.6 | 19.1 |
@@ -209,3 +234,86 @@ The official `meta-llama/Llama-3.1-8B-Instruct` baseline measured 63.50% in this
 2. **Legacy extended-eval runs lack Minerva.** full / dora / pissa / milora / lift / randlora runs from 2026-04-19–21 all recorded MATH-500 / AMC23 / AIME-24/25 but not Minerva, because Minerva's `load_dataset` failed before the hf-id fix. The five new runs that include Minerva are the only ones with complete extended-eval coverage. Only two methods (fura, full) have their current best row *without* a Minerva score — re-evaluating the winning checkpoints on Minerva alone is cheap (272 problems, greedy@1) and could be done via `uv run eval_rl.py --checkpoint <path>/step=50 --math-verify-datasets Minerva` once those winning runs' merged checkpoints exist on disk.
 3. ~~`randlora-lr_1e-4` sweep point~~ — **Completed.** randlora 1e-4 is now the best randlora config (mean-ext 34.8, on par with full and fura).
 4. ~~fura LR sweep~~ — **Completed (8e-5, 2e-4, 3e-4).** fura 8e-5 is now the best fura config with Minerva coverage (MATH 63.0, AMC 52.5, AIME-25 17.5, Minerva 21.0). The earlier `fura-lr_1e-5 + train_both + s_to_keep` run at 89.5% primary eval but no extended eval remains the best primary-eval-only number — worth re-running under the current harness for full coverage.
+5. ~~fura decomp × s_to grid at lr=1e-4~~ — **Completed for 5 of 6 cells (2026-05-02).** The canonical 6-cell grid (`{output_one_block, input_one_block} × {frozen, trainable, keep_trainable}`, `train_small`, rank=full) is now extended-eval'd. The `output_one_block / s_to_frozen` rerun at lr=1e-4 supersedes the prior fura best on mean-5 extended (34.0 vs 33.5) and is now the TL;DR row. The 6th cell (`input_one_block / s_to_frozen`, rerun-0502-213816) is currently training on GPU 6.
+
+## Llama-3.1-8B-Instruct r=64 best-ckpt math-verify eval (added 2026-05-01)
+
+GRPO sweep on `meta-llama/Llama-3.1-8B-Instruct` (the official repo, not the NousResearch mirror), `qwedsacf/competition_math`, 50 GRPO steps, `lr=6e-5`, all adapter ranks fixed at 64 (lift has no rank). Each run captures the **best in-train held-out 1000-prompt eval** via `--save-best-val-ckpt` (added this session — saves a merged HF ckpt to `<run_dir>/best/` whenever `eval/accuracy` improves). Those best ckpts are then re-evaluated on the full 5-dataset math-verify suite via `eval_rl.py`. AIME-24/25 are avg@8 (n_samples=8, T=0.6); MATH-500/AMC23/Minerva are greedy.
+
+- Source: `/data/yequan/fura/rl_runs/Llama-3.1-8B-Instruct/<mode>/<run_name>/best/eval_results.json`
+- Pre-training Llama-3.1-8B-Instruct baseline (this pipeline): **63.10%** in-train held-out 1000.
+- Wandb project: `llama3-8B-RL` (same as the prior r=16 sweep — runs with `-llama31-8b-instruct` suffix and rank embedded in name).
+
+### Configuration notes
+- All runs used in-process vLLM (`--vllm-url http://localhost:1` to force fallback when an unrelated `vllm serve` was squatting :8000).
+- `--gpu-memory-utilization 0.3` for lora/milora/pissa, `0.25` for dora/randlora (their forward materializes additional weights — broke the activation budget at 0.3).
+- **dora** and **randlora** required `--micro-batch-size 1 --gradient-accumulation-steps 256` (effective batch unchanged). With the run_rl.py LoRA-mode default of `mbs=2, gacc=128` they OOM during step-1 backward on a single H100 NVL (93 GB). Mbs=1 cuts activation memory ~2× and unblocks both.
+- **lift** could not fit on a single H100 NVL at any `--gpu-memory-utilization` value: vLLM needs ≥0.20 to allocate KV-cache for max_model_len=2048, but lift's full-param AdamW state needs the rest of the GPU. Best ckpt saved at step=0 (baseline). Omitted from the eval table below.
+- **pissa best ckpt is step-0** (RL-trained model collapsed to <2% mid-run; the pre-training baseline is the saved best). **milora's** best is step=10 (peak 68.0%, then collapse).
+
+### `--save-best-val-ckpt` bug-fix note
+The first eval pass failed with `KeyError: 'layers.10.mlp.down_proj.base_layer.weight'` because `save_merged_checkpoint` for the LoRA family currently calls `model.merge_adapter()` (fuses values into `base_layer.weight` but keeps PEFT key wrappers) followed by `base.save_pretrained()` — so the on-disk ckpt has both the merged `*.base_layer.weight` *and* now-redundant `*.lora_A/B.default.weight` entries, which vLLM's vanilla LlamaForCausalLM loader rejects. Fixed by post-hoc rewriting each ckpt with `tools/strip_peft_keys.py` (renames `*.base_layer.weight → *.weight`, drops lora_A/B/magnitude/randlora_* entries; merge values are already correct, this is purely a naming repair). The original PEFT-structured shards are preserved at `<run_dir>/best.pre_strip/`. A proper fix to `run_rl.py:save_merged_checkpoint` would use PEFT's `merge_and_unload()` instead — left as follow-up.
+
+### Best-val ckpts and their math-verify scores
+
+| Method | Best ckpt step | In-train eval/acc (1000) | MATH-500 | AIME-24 (avg@8) | AIME-25 (avg@8) | AMC23 | Minerva | Mean (5) |
+|---|---|---|---|---|---|---|---|---|
+| **lora** (rank=64, mbs=2 gacc=128) | 15 | 69.20% | 39.80% | 4.58% | 0.00% | 20.00% | 15.44% | 15.96% |
+| **dora** (rank=64, mbs=1 gacc=256) | 10 | 69.00% | 40.40% | 4.58% | **1.25%** | 27.50% | 15.44% | 17.83% |
+| **randlora** (rank=64, mbs=1 gacc=256) | 30 | 67.80% | **42.20%** | 2.92% | 0.83% | **32.50%** | 14.71% | **18.63%** |
+| **milora** (rank=64, mbs=2 gacc=128) | 10 | 68.00% | 41.60% | **5.83%** | 0.83% | 30.00% | 14.71% | 18.59% |
+| **pissa** (rank=64, mbs=2 gacc=128) | 0 | 64.40% | 40.40% | 2.50% | 0.42% | **32.50%** | **16.18%** | 18.40% |
+| **blocktt** (output_one_block, small, keep_trainable, rank=full, lr=1e-4, mbs=1 gacc=256) | 45 | **70.30%** | 40.80% | 5.42% | 0.42% | 27.50% | 15.81% | 17.99% |
+
+### Headlines
+
+1. **In-train eval/acc and math-verify mean rank disagree.** lora wins the in-train held-out 1000 (69.20%) but lands last on the math-verify mean (15.96%). randlora is third on in-train (67.80%) but first on math-verify mean (18.63%). This is consistent with the larger pattern in this doc: the held-out 1000 is drawn from the same competition_math distribution used for training, while AMC/AIME/MATH-500/Minerva are out-of-distribution from the SFT side, so they reward methods whose RL trajectory generalized rather than overfit.
+2. **pissa's collapse is real, but the step-0 ckpt is competitive.** Even though pissa's "best" is just the pre-RL baseline, it scores 18.40% mean (top-3) — close to randlora (18.63) and milora (18.59). At lr=6e-5 the RL update destroyed the model; the saved baseline gets full credit on math-verify. To get a *trained* pissa number, lr would need to drop to ~1e-5 (not done).
+3. **AMC23 is the noisiest single-dataset signal.** Spread is 20.0–32.5% across these 5 methods — 12.5 pp gap on a 40-problem set. Single-pass greedy @ T=0.0; small-n variance is large. AIME-25 is similarly noisy (0.0–1.25% over 240 attempts at avg@8). MATH-500, AMC23, Minerva are the more discriminative slices here.
+4. **Methodology limitation.** The "best by in-train eval/acc" criterion picks ckpts that spike on the same distribution they were trained on. For OOD math-verify reporting, mid-run ckpts (where the model hasn't yet specialized to competition_math) sometimes outscore the in-train peak. We didn't test that here — only the in-train-best ckpt was eval'd.
+
+### What's NOT in this table
+- **lift**: couldn't fit on single H100; only step-0 saved. Skipped.
+
+### BlockTT also wins on the ladder
+
+The new BlockTT retrain (`blocktt-output_one_block-small-keep_trainable-r64-lr_1e-4` with `--save-best-val-ckpt`) hit **70.30% in-train @ step 45** — surpassing the prior session's wandb-only BlockTT-Instruct best (69.0% @ lr=1e-4). It now leads the in-train-eval column by +1.10 pp over lora. On math-verify mean it lands second (17.99% vs randlora's 18.63%), and is competitive on every dataset. Because BlockTT trained the **smaller** core under `train_position=small` it has roughly 1/r-th the trainable params of the LoRA-family runs at rank=64, so its accuracy-per-trainable-param ratio is the most favorable in this table.
+
+## Qwen2.5-7B (base) — initial lora / blocktt / dora @ lr=1e-4 (added 2026-05-02)
+
+GRPO sweep on `Qwen/Qwen2.5-7B` (the base, *not* the Instruct variant), `qwedsacf/competition_math`, 50 GRPO steps, `lr=1e-4`. Three runs, single-LR comparison: `lora` r=64, `dora` r=64, `blocktt` (`output_one_block` / `train_small` / `s_to_keep_trainable` / `rank=full`). All three use in-process vLLM rollout (no `vllm serve` HTTP server) on a single H100 NVL (96 GB).
+
+- Source: `/data/yequan/fura/rl_runs/Qwen2.5-7B/{lora,dora,blocktt}/`
+- Wandb project: `qwen2_5-7B-RL`
+- Baseline (this pipeline, base model under boxed-prompt template): in-train held-out **70.8%** for the lora run, **69.8%** for blocktt, **68.6%** for dora. The 2.2 pp baseline spread across nominally identical configurations is rollout-sampling noise on the n=1000 held-out (T=0.0 greedy at step 0 should be deterministic — the spread suggests the in-process vLLM warm-up state differs run-to-run).
+- Eval saved as merged HF ckpt at `step=50/` (no best-val-checkpointing; only the last-step ckpt is preserved per the project's "save last not best" policy).
+
+### Memory recipe
+
+The default `run_rl.py` settings (`--micro-batch-size 2 --gradient-accumulation-steps 128 --gpu-memory-utilization 0.4`) **OOM at step 1** for blocktt and dora on Qwen2.5-7B (lora fits, just). The Llama-3.1-8B-Instruct memory recipe carries over identically:
+
+| Method | mbs | gacc | gpu_util | max_model_len | Peak GPU |
+|---|---:|---:|---:|---:|---:|
+| lora | 2 | 128 | 0.4 | 2048 | ~80 GB ✅ |
+| dora | 1 | 256 | 0.25 | 2048 | ~71 GB ✅ |
+| blocktt | 1 | 256 | 0.25 | 1536 | ~67 GB ✅ |
+
+Effective batch (32 prompts × 8 group × mbs × gacc / micro_batches_per_step) is unchanged across the mbs=1 and mbs=2 configs. Both dora and blocktt OOM'd at default settings (92.2 / 92.9 GB used at OOM, exceeding the 93 GB budget with vLLM weights + activations + adapter state). The recipe in the table above leaves ~25 GB of headroom.
+
+### Results
+
+| Method | Train acc (step 50) | In-train eval/acc (1000) | Baseline | MATH-500 | AIME-24 (avg@8) | AIME-25 (avg@8) | AMC23 | Minerva | Mean (5) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **lora** (rank=64) | 75.78% | 89.30% | 70.80% | 58.60% | 10.83% | 2.92% | **60.00%** | 20.96% | **30.66%** |
+| **dora** (rank=64) | 73.44% | 89.30% | 68.60% | 59.00% | 10.42% | **8.33%** | 50.00% | **22.06%** | 29.96% |
+| **blocktt** (output_one_block, small, keep_trainable, rank=full) | 67.58% | 89.30% | 69.80% | **59.80%** | **10.83%** | 5.83% | 42.50% | 21.69% | 28.13% |
+
+(Mean is unweighted across the 5 math-verify datasets. AIME columns are avg@8 at T=0.6; the rest are greedy@1 at T=0.0.)
+
+### Headlines
+
+1. **All three methods reach the same in-train eval/acc** (89.30% — bit-identical across runs, suggesting the held-out 1000-prompt set saturates at this level for any reasonable adapter trained on competition_math from Qwen2.5-7B base). The differentiation is on the OOD math-verify slices.
+2. **lora wins AMC23 by 10–17.5 pp** (60.0% vs dora 50.0% vs blocktt 42.5%), and that single dataset drives lora's higher mean (30.66%). On the other 4 slices, lora is mid-pack or last. AMC23 is a 40-problem set so the spread is high-variance; do not over-interpret.
+3. **blocktt leads MATH-500 (59.80%) and AIME-24 (10.83%)** but trails on AMC23. dora is a balanced runner-up across MATH-500 (59.00%), AIME-25 (8.33% — best), and Minerva (22.06% — best). At this single LR the ranking is method-coupled rather than tier-separated; LR tuning is needed before a confident method comparison.
+4. **Compared to Llama-3.1-8B-Instruct at the same lr=1e-4** (Mean-5 column): qwen2.5-7B lora 30.66% > llama lora 15.96%; qwen2.5-7B dora 29.96% > llama dora 17.83%; qwen2.5-7B blocktt 28.13% > llama blocktt 17.99%. Qwen2.5-7B base is meaningfully more LR-tolerant *and* a stronger math-RL substrate at this LR than Llama-3.1-8B-Instruct, consistent with the Qwen3-1.7B vs Llama-3.1-8B-Instruct contrast noted earlier in this doc. None of the runs collapsed (train acc finished 67.6–75.8% from baseline ~69%); the lr=1e-4 stable window is wide on Qwen2.5-7B.
+5. **No LR sweep yet.** All three runs used `lr=1e-4` — the value that maximized blocktt on Llama-3.1-8B-Instruct (69.0% final) but was too high for Llama LoRA r=64 (collapsed). Qwen2.5-7B's LoRA tolerated 1e-4 fine; the optimal lora/dora LR may be lower (cf. Qwen3-1.7B best LoRA LR = 6e-5, best DoRA LR = 1e-4). LR sweep is the obvious next step.

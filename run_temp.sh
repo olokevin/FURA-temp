@@ -1,10 +1,15 @@
 # bash run_temp.sh >/dev/null 2>&1 &
-### rl
+### 1.7B rl
 # DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable bash run_rl.sh
 # DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable CFG_SUFFIX="--blocktt-normalize-after-update" NAME_SUFFIX="-norm" bash run_rl.sh
 
-DEVICE=1 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=output_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable bash run_rl.sh
+# DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=output_one_block TRAIN_POSITION=small S_MERGED_TO=frozen bash run_rl.sh
+# DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=frozen bash run_rl.sh
+# DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=trainable bash run_rl.sh
+# DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable bash run_rl.sh
 
+### 7B rl
+# DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=output_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable bash run_rl_7B.sh
 
 ### sft
 # DEVICE=2 LR=2e-4 TRAIN_MODE=blocktt DECOMP_MODE=output_one_block TRAIN_POSITION=small S_MERGED_TO=frozen CFG_SUFFIX="--enable-save-ckpt --save-grads-steps=0,10,30" bash run_sft.sh

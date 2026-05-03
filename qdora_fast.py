@@ -271,4 +271,13 @@ def materialize_qdora_to_linear(model: nn.Module) -> int:
             parent = getattr(parent, key)
         setattr(parent, path[-1], merged)
 
+    # Strip the BitsAndBytes quantization_config from model.config so the saved
+    # checkpoint loads as a plain bf16 model. Otherwise from_pretrained tries
+    # to reconstruct a 4-bit model and the dense merged weights end up on meta.
+    # Must delattr (not set None): transformers' save_pretrained calls
+    # quantization_config.to_dict() guarded by hasattr — None would crash.
+    cfg = getattr(model, "config", None)
+    if cfg is not None and hasattr(cfg, "quantization_config"):
+        delattr(cfg, "quantization_config")
+
     return len(replacements)

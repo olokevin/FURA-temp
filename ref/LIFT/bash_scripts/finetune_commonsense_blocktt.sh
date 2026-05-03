@@ -34,6 +34,8 @@ trainable_type="${trainable_type:-all}"
 lr="${lr:-2e-4}"
 seed="${seed:-43}"
 MAX_STEPS="${MAX_STEPS:-0}"
+PER_DEVICE_TRAIN_BS="${PER_DEVICE_TRAIN_BS:-8}"
+GRAD_ACC_STEPS="${GRAD_ACC_STEPS:-2}"
 model_tag="${MODEL##*/}"
 
 # --- calibrated BTT knobs (set calib_mode=v2_bp to enable) ---
@@ -62,15 +64,15 @@ accelerate launch \
     --mixed_precision="bf16" \
     src/finetune_blocktt.py \
     --model_name_or_path ${MODEL} \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 1 \
+    --per_device_train_batch_size ${PER_DEVICE_TRAIN_BS} \
+    --per_device_eval_batch_size 16 \
     --logging_steps 10 \
     --max_seq_len 2048 \
     --learning_rate ${lr} \
     --weight_decay 0. \
     --num_train_epochs 3 \
     --mixed_precision bf16 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps ${GRAD_ACC_STEPS} \
     --lr_scheduler_type linear \
     --num_warmup_steps 0.03 \
     --seed ${seed} \
@@ -86,13 +88,15 @@ accelerate launch \
     --calib_num_seqs ${calib_num_seqs} \
     --calib_batch_size ${calib_batch_size} \
     --save_interval 100000 \
-    --val_set_size 120 \
-    --eval_step 400 \
+    --load_last_model \
     --data_path ${DATA_DIR}/ft-training_set/commonsense_170k.json \
     --wandb_project "${wandb_project}" \
     --wandb_run_name "${run_name}" \
     --max_steps ${MAX_STEPS} \
     --output_dir $OUTPUT 2> >(tee $OUTPUT/err.log >&2) | tee $OUTPUT/training.log
+
+    # --val_set_size 120 \
+    # --eval_step 400 \
 
 if [ "${MAX_STEPS}" = "0" ]; then
     bash ./bash_scripts/eval_commonsense.sh \

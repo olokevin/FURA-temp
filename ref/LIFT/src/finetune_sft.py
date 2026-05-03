@@ -53,6 +53,218 @@ from utils.data_utils import SupervisedDataset, DataCollatorForSupervisedDataset
 
 from tools.system_metrics import SysMon
 
+
+_PROJ_ATTN = ("q_proj", "k_proj", "v_proj", "o_proj")
+_PROJ_MLP = ("gate_proj", "up_proj", "down_proj")
+_PROJ_UPROJ_MODULES = ("gate_proj", "up_proj")  # informative u-proj on Llama-3-8B
+_PROJ_VPROJ_MODULES = ("down_proj",)            # informative v-proj on Llama-3-8B
+
+
+def _proj_module_path(layer_idx: int, module_name: str) -> str:
+    sub = "self_attn" if module_name in _PROJ_ATTN else "mlp"
+    return f"model.layers.{layer_idx}.{sub}.{module_name}.weight"
+
+
+class ProjEnergyRecorder:
+    """Record U/V projection energy of W', G, and dW = W' - W0 during training.
+
+    For each tracked (layer, module), at each record step we compute up to six
+    scalars: u_proj and v_proj of {W' (current weight), G (current grad), dW =
+    W' - W0}. Only u_proj is plotted for {gate_proj, up_proj} and only v_proj
+    for down_proj (other shapes are trivial-1.0 — see docs/exp_results/motivating.md).
+
+    U0, V0^T, and W0 are SVD-cached at init on CPU. At each record we move the
+    needed factor to GPU, compute ||U0^T X||_F / ||X||_F (and the V version),
+    and append one JSON line per step under output_dir/proj_energy.jsonl. At
+    end-of-training, the main process writes proj_energy.csv and a 2x3 plot
+    (rows = U/V; cols = W', G, dW) to output_dir/proj_energy.png.
+
+    IMPORTANT: record() must be called between accelerator.backward(loss) and
+    optimizer.zero_grad(), so that param.grad still holds the per-step gradient.
+    """
+
+    QUANTITIES = ("W", "G", "dW")  # W' (current weight), G (grad), dW = W' - W0
+
+    def __init__(self, model, layer_indices, module_names, output_dir, device,
+                 svd_dtype=torch.float32, is_main_process=True):
+        self.layer_indices = list(layer_indices)
+        self.module_names = list(module_names)
+        self.output_dir = output_dir
+        self.device = device
+        self.svd_dtype = svd_dtype
+        self.is_main_process = is_main_process
+        self.records = []  # in-memory mirror of the JSONL
+
+        os.makedirs(output_dir, exist_ok=True)
+        self.jsonl_path = os.path.join(output_dir, "proj_energy.jsonl")
+        self.csv_path = os.path.join(output_dir, "proj_energy.csv")
+        self.png_path = os.path.join(output_dir, "proj_energy.png")
+
+        # Build target list and resolve parameters
+        # t = {layer, mod, key, param (live ref), U0_cpu?, Vt0_cpu?, W0_cpu}
+        self.targets = []
+        sd = dict(model.named_parameters())
+        for L in self.layer_indices:
+            for mod in self.module_names:
+                key = _proj_module_path(L, mod)
+                if key not in sd:
+                    if is_main_process:
+                        print(f"[proj-energy] WARN: {key} not in model.named_parameters(); skipping")
+                    continue
+                self.targets.append({
+                    "layer": L, "mod": mod, "key": key,
+                    "param": sd[key],
+                    "U0": None, "Vt0": None, "W0": None,
+                })
+
+        if is_main_process:
+            print(f"[proj-energy] caching W0, U0/V0 for {len(self.targets)} (layer, module) pairs ...")
+        # SVD pretrained weights once; cache W0 + relevant factors on CPU
+        with torch.no_grad():
+            for t in self.targets:
+                W0_gpu = t["param"].detach().to(self.device, dtype=self.svd_dtype)
+                U0, _, Vt0 = torch.linalg.svd(W0_gpu, full_matrices=False)
+                if t["mod"] in _PROJ_UPROJ_MODULES:
+                    t["U0"] = U0.detach().cpu().contiguous()
+                if t["mod"] in _PROJ_VPROJ_MODULES:
+                    t["Vt0"] = Vt0.detach().cpu().contiguous()
+                # Cache W0 in svd_dtype on CPU so dW = W' - W0 stays exact across steps
+                t["W0"] = W0_gpu.detach().cpu().contiguous()
+                del W0_gpu, U0, Vt0
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        if is_main_process:
+            with open(self.jsonl_path, "w") as f:
+                pass
+            print(f"[proj-energy] writing live records to {self.jsonl_path}")
+
+    def _proj_pair(self, X: torch.Tensor, U0_gpu, Vt0_gpu) -> tuple[float, float]:
+        """Return (u_proj, v_proj) for matrix X. NaN where the factor is None."""
+        den = torch.linalg.norm(X)
+        if float(den) == 0.0:
+            return float("nan"), float("nan")
+        u = float(torch.linalg.norm(U0_gpu.T @ X) / den) if U0_gpu is not None else float("nan")
+        v = float(torch.linalg.norm(X @ Vt0_gpu.T) / den) if Vt0_gpu is not None else float("nan")
+        return u, v
+
+    @torch.no_grad()
+    def record(self, step: int):
+        """Compute u/v_proj of W', G, dW at the current state and append to JSONL.
+
+        Must be called BEFORE optimizer.zero_grad() so that .grad is still set.
+        """
+        if not self.is_main_process:
+            return
+        row = {"step": int(step)}
+        for t in self.targets:
+            W_cur = t["param"].detach().to(self.device, dtype=self.svd_dtype)
+            G_cur = t["param"].grad
+            G_cur = G_cur.detach().to(self.device, dtype=self.svd_dtype) if G_cur is not None else None
+
+            U0_gpu = t["U0"].to(self.device, non_blocking=True) if t["U0"] is not None else None
+            Vt0_gpu = t["Vt0"].to(self.device, non_blocking=True) if t["Vt0"] is not None else None
+
+            # W' (current weight)
+            uW, vW = self._proj_pair(W_cur, U0_gpu, Vt0_gpu)
+            # dW = W' - W0  (W0 cached in same dtype on CPU)
+            W0_gpu = t["W0"].to(self.device, non_blocking=True)
+            dW = W_cur - W0_gpu
+            udW, vdW = self._proj_pair(dW, U0_gpu, Vt0_gpu)
+            del W0_gpu, dW
+            # G (per-step gradient at this optimizer step)
+            if G_cur is not None:
+                uG, vG = self._proj_pair(G_cur, U0_gpu, Vt0_gpu)
+            else:
+                uG, vG = float("nan"), float("nan")
+
+            tag = f"L{t['layer']}.{t['mod']}"
+            if t["U0"] is not None:
+                row[f"{tag}.W.u_proj"] = uW
+                row[f"{tag}.G.u_proj"] = uG
+                row[f"{tag}.dW.u_proj"] = udW
+            if t["Vt0"] is not None:
+                row[f"{tag}.W.v_proj"] = vW
+                row[f"{tag}.G.v_proj"] = vG
+                row[f"{tag}.dW.v_proj"] = vdW
+
+            del W_cur, G_cur, U0_gpu, Vt0_gpu
+
+        self.records.append(row)
+        with open(self.jsonl_path, "a") as f:
+            f.write(json.dumps(row) + "\n")
+
+    def finalize(self):
+        """Write CSV and PNG plot from accumulated records. Main process only."""
+        if not self.is_main_process:
+            return
+        if not self.records:
+            print("[proj-energy] no records to finalize; skipping plot")
+            return
+
+        records = []
+        with open(self.jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                records.append(json.loads(line))
+        if not records:
+            return
+
+        all_keys = set()
+        for r in records:
+            all_keys.update(r.keys())
+        all_keys.discard("step")
+        cols = ["step"] + sorted(all_keys)
+
+        with open(self.csv_path, "w") as f:
+            f.write(",".join(cols) + "\n")
+            for r in records:
+                f.write(",".join(str(r.get(c, "")) for c in cols) + "\n")
+        print(f"[proj-energy] wrote {self.csv_path}")
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except Exception as e:
+            print(f"[proj-energy] matplotlib unavailable ({e}); skipping plot")
+            return
+
+        steps = [r["step"] for r in records]
+        # Group keys by (proj_type, quantity). Key format: L{N}.{mod}.{Q}.{u|v}_proj
+        def _filter(proj, quantity):
+            suffix = f".{quantity}.{proj}_proj"
+            return sorted(k for k in all_keys if k.endswith(suffix))
+
+        fig, axes = plt.subplots(2, 3, figsize=(14, 6.5), constrained_layout=True)
+        col_titles = {"W": "W' (current weight)", "G": "G (per-step gradient)", "dW": "ΔW = W' − W₀"}
+        row_titles = {"u": "U-projection ‖U₀ᵀX‖_F / ‖X‖_F",
+                       "v": "V-projection ‖XV₀‖_F / ‖X‖_F"}
+
+        for r_idx, proj in enumerate(("u", "v")):
+            for c_idx, q in enumerate(("W", "G", "dW")):
+                ax = axes[r_idx, c_idx]
+                keys = _filter(proj, q)
+                for k in keys:
+                    ys = [r.get(k, float("nan")) for r in records]
+                    label = ".".join(k.split(".")[:2])  # e.g. L0.gate_proj
+                    ax.plot(steps, ys, marker=".", markersize=3, linewidth=1.0, label=label)
+                if r_idx == 0:
+                    ax.set_title(col_titles[q], fontsize=10)
+                if c_idx == 0:
+                    ax.set_ylabel(row_titles[proj], fontsize=9)
+                ax.set_xlabel("Step")
+                ax.grid(True, alpha=0.2, linewidth=0.4)
+                if keys:
+                    ax.legend(loc="best", fontsize=6, framealpha=0.9)
+
+        fig.savefig(self.png_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[proj-energy] wrote {self.png_path}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="S2FT Training")
     parser.add_argument(
@@ -296,6 +508,35 @@ def parse_args():
         help="Disable Weights & Biases logging.",
     )
 
+    # --- Projection-energy recorder ---
+    parser.add_argument(
+        "--record_proj_energy",
+        action="store_true",
+        help="Record U/V projection energy of the live weight against the pretrained "
+             "U0/V0 during training. Writes proj_energy.jsonl (live) and proj_energy.{csv,png} "
+             "(at end) under --output_dir.",
+    )
+    parser.add_argument(
+        "--proj_record_layers",
+        type=str,
+        default="0,15,31",
+        help="Comma-separated layer indices to record (default: 0,15,31).",
+    )
+    parser.add_argument(
+        "--proj_record_modules",
+        type=str,
+        default="gate_proj,up_proj,down_proj",
+        help="Comma-separated module names. Only u-proj for gate/up_proj and v-proj "
+             "for down_proj are informative on Llama-3-8B; other modules are trivial-1.",
+    )
+    parser.add_argument(
+        "--proj_record_interval",
+        type=int,
+        default=0,
+        help="Optimizer-step interval between projection-energy records "
+             "(default 0 = use --logging_steps).",
+    )
+
     args = parser.parse_args()
 
     return args
@@ -523,6 +764,29 @@ def main():
         base_params=sum(p.numel() for p in model.parameters()),
     )
 
+    proj_recorder = None
+    if args.record_proj_energy:
+        if args.output_dir is None:
+            print("[proj-energy] WARN: --output_dir not set; disabling recorder")
+        else:
+            try:
+                proj_layers = [int(x) for x in args.proj_record_layers.split(",") if x.strip()]
+                proj_modules = [m.strip() for m in args.proj_record_modules.split(",") if m.strip()]
+                proj_recorder = ProjEnergyRecorder(
+                    model=accelerator.unwrap_model(model),
+                    layer_indices=proj_layers,
+                    module_names=proj_modules,
+                    output_dir=args.output_dir,
+                    device=accelerator.device,
+                    is_main_process=accelerator.is_main_process,
+                )
+                # Record step 0 (initial state, should give 1.0)
+                proj_recorder.record(step=0)
+            except Exception as e:
+                print(f"[proj-energy] init failed ({e}); recorder disabled")
+                proj_recorder = None
+    proj_interval = args.proj_record_interval if args.proj_record_interval > 0 else args.logging_steps
+
     # Training function
     def train_epoch(epoch):
         nonlocal best_model, best_eval_loss
@@ -536,6 +800,14 @@ def main():
                 _t0 = time.time()
                 optimizer.step()
                 lr_scheduler.step()
+                # Record proj-energy BEFORE zero_grad so .grad still holds G.
+                if (
+                    proj_recorder is not None
+                    and proj_interval > 0
+                    and accelerator.sync_gradients
+                    and (args.completed_steps + 1) % proj_interval == 0
+                ):
+                    proj_recorder.record(step=args.completed_steps + 1)
                 optimizer.zero_grad()
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
@@ -631,6 +903,18 @@ def main():
             "learning_rate": args.learning_rate,
         },
     )
+
+    if proj_recorder is not None:
+        # Record final step too (if not already)
+        if not proj_recorder.records or proj_recorder.records[-1]["step"] != args.completed_steps:
+            try:
+                proj_recorder.record(step=args.completed_steps)
+            except Exception as e:
+                print(f"[proj-energy] final record failed ({e})")
+        try:
+            proj_recorder.finalize()
+        except Exception as e:
+            print(f"[proj-energy] finalize failed ({e})")
 
     # --- Save policy: write last/ always, best/ if best-tracking ran.
     if args.output_dir is not None and accelerator.is_main_process:
