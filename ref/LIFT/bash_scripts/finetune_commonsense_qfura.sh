@@ -25,6 +25,17 @@ quant_block_layout="${quant_block_layout:-flat}"
 lr="${lr:-2e-4}"
 seed="${seed:-43}"
 MAX_STEPS="${MAX_STEPS:-0}"
+# Knobs for big-model runs (e.g. Llama-3-70B on a single H100):
+#   load_strategy=layer_stream  (load on CPU, BTT+NF4 each linear via GPU
+#                                staging round-trip; required for >=30B)
+#   per_device_train_batch_size and gradient_accumulation_steps default to
+#   the 8B recipe (8 x 2 = 16). For 70B, override to e.g. 1 x 16 = 16.
+#   max_seq_len default 2048; drop to 1024 for 70B if activation memory is tight.
+load_strategy="${load_strategy:-direct}"
+per_device_train_batch_size="${per_device_train_batch_size:-8}"
+gradient_accumulation_steps="${gradient_accumulation_steps:-2}"
+max_seq_len="${max_seq_len:-2048}"
+num_train_epochs="${num_train_epochs:-3}"
 model_tag="${MODEL##*/}"
 
 wandb_project="${wandb_project:-qfura-${model_tag}}"
@@ -51,15 +62,15 @@ uv run --project ${PROJECT_DIR} accelerate launch \
     --mixed_precision="bf16" \
     src/finetune_qfura.py \
     --model_name_or_path ${MODEL} \
-    --per_device_train_batch_size 8 \
+    --per_device_train_batch_size ${per_device_train_batch_size} \
     --per_device_eval_batch_size 1 \
     --logging_steps 10 \
-    --max_seq_len 2048 \
+    --max_seq_len ${max_seq_len} \
     --learning_rate ${lr} \
     --weight_decay 0. \
-    --num_train_epochs 3 \
+    --num_train_epochs ${num_train_epochs} \
     --mixed_precision bf16 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps ${gradient_accumulation_steps} \
     --lr_scheduler_type linear \
     --num_warmup_steps 0.03 \
     --seed ${seed} \
@@ -71,6 +82,7 @@ uv run --project ${PROJECT_DIR} accelerate launch \
     --s_merged_to ${s_merged_to} \
     --trainable_type ${trainable_type} \
     --quant_block_layout ${quant_block_layout} \
+    --load_strategy ${load_strategy} \
     --save_interval 100000 \
     --val_set_size 120 \
     --eval_step 400 \

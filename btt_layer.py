@@ -216,8 +216,8 @@ def resolve_blocktt_s_merged_to(train_position, s_merged_to=None, left_size=None
     return "input" if train_left else "output"
 
 
-def _raise_if_non_cuda_weight(full_name, weight):
-    if weight.is_cuda:
+def _raise_if_non_cuda_weight(full_name, weight, allow_non_cuda=False):
+    if weight.is_cuda or allow_non_cuda:
         return
     raise RuntimeError(
         "Linear->BTT conversion requires CUDA weights so decomposition runs on GPU. "
@@ -240,6 +240,7 @@ def convert_linear_to_btt(
     factorize_by_head=False,
     model_config=None,
     convert_mode="svd",
+    allow_non_cuda=False,
 ):
     if btt_rank is None:
         btt_rank = "full"
@@ -279,7 +280,7 @@ def convert_linear_to_btt(
         for name, module in modules_to_replace
         if not module.weight.is_cuda
     ]
-    if non_cuda_modules:
+    if non_cuda_modules and not allow_non_cuda:
         preview = ", ".join(
             f"{name}({device})" for name, device in non_cuda_modules[:3]
         )
@@ -287,7 +288,9 @@ def convert_linear_to_btt(
             preview += f", ... (+{len(non_cuda_modules) - 3} more)"
         raise RuntimeError(
             "Linear->BTT conversion requires all target Linear weights on CUDA. "
-            f"Found non-CUDA modules: {preview}"
+            f"Found non-CUDA modules: {preview}. "
+            "Pass allow_non_cuda=True to bypass (used by the layer-streaming "
+            "loader: torch.linalg.svd works on CPU, just slower)."
         )
     print(
         f"Converting {len(modules_to_replace)} Linear layers to BTT "
@@ -296,7 +299,7 @@ def convert_linear_to_btt(
     )
 
     for full_name, linear in modules_to_replace:
-        _raise_if_non_cuda_weight(full_name, linear.weight)
+        _raise_if_non_cuda_weight(full_name, linear.weight, allow_non_cuda=allow_non_cuda)
         path = full_name.split(".")
         parent = model
         for key in path[:-1]:
@@ -346,6 +349,7 @@ def convert_linear_to_btt(
             s_merged_to=s_merged_to,
             train_position=train_position,
             convert_mode=convert_mode,
+            allow_non_cuda=allow_non_cuda,
         )
 
         setattr(parent, child_name, btt_layer)
@@ -712,12 +716,14 @@ class BTTLayer(nn.Module):
         s_merged_to=None,
         train_position="small",
         convert_mode="svd",
+        allow_non_cuda=False,
     ):
         convert_mode = normalize_blocktt_convert_mode(convert_mode)
-        if not weight.is_cuda:
+        if not weight.is_cuda and not allow_non_cuda:
             raise RuntimeError(
                 "BTT initialization requires CUDA weights so decomposition runs on GPU. "
-                f"Got device={weight.device}."
+                f"Got device={weight.device}. "
+                "Pass allow_non_cuda=True for layer-streaming loaders that BTT-decompose on CPU."
             )
         if weight.shape != (self.out_features, self.in_features):
             raise ValueError(
@@ -1197,6 +1203,191 @@ def convert_btt_to_qbtt_(model, layout):
         "bytes_saved": bytes_saved,
         "layout": layout,
         "names": names,
+    }
+
+
+@torch.no_grad()
+def convert_and_quantize_linear_to_qbtt_streaming(
+    model,
+    btt_rank,
+    decomp_mode,
+    train_position,
+    s_merged_to,
+    quant_layout,
+    target_modules,
+    cuda_device,
+    skip_names=("lm_head",),
+    factorize_by_head=False,
+    convert_mode="svd",
+    init_mode="default",
+    progress_every=10,
+):
+    """Layer-streaming BTT + NF4 quantization, designed to fit Llama-3-70B
+    + qfura on a single H100.
+
+    Walks every targeted nn.Linear in `model`, and for each one:
+      1. Moves the source bf16 weight to `cuda_device` (transient).
+      2. Builds a BTTLayer on `cuda_device`, init via SVD/QR.
+      3. NF4-quantizes the frozen core via `quantize_frozen_core_`.
+      4. Replaces the original linear with the now-QBTTLayer (whose frozen
+         core is already on GPU as a Params4bit blob, ~25% the size).
+      5. Frees the original bf16 weight on CPU.
+
+    The non-target modules (embed, lm_head, layernorms) stay where they are.
+    A separate post-step moves them to GPU in bf16.
+
+    Peak GPU memory during conversion is bounded by **one bf16 layer**
+    (down_proj is largest at ~470 MB for Llama-3-70B), so this works on a
+    94 GB H100 even though the full bf16 model is ~140 GB.
+
+    Args:
+      model: full model on CPU in bf16. Will be mutated in place.
+      btt_rank, decomp_mode, train_position, s_merged_to, quant_layout,
+      factorize_by_head, convert_mode, init_mode: same semantics as
+        `convert_linear_to_btt` + `convert_btt_to_qbtt_`.
+      target_modules: iterable of leaf names to convert (e.g. ["q_proj", ...]).
+      cuda_device: torch.device (e.g. torch.device("cuda:0")).
+      skip_names: leaf names to NOT convert (default: ("lm_head",)).
+      progress_every: print progress every N layers converted.
+
+    Returns:
+      dict with keys: num_converted, bytes_saved, names, decomp_mode_used.
+    """
+    if isinstance(decomp_mode, dict):
+        normalized_decomp_mode = {
+            str(name): normalize_blocktt_decomp_mode(mode, allow_square=False)
+            for name, mode in decomp_mode.items()
+        }
+        default_decomp_mode = None
+    else:
+        normalized_decomp_mode = None
+        default_decomp_mode = normalize_blocktt_decomp_mode(decomp_mode)
+
+    target_set = set(target_modules)
+    convert_mode = normalize_blocktt_convert_mode(convert_mode)
+
+    # Snapshot the list of modules first (we mutate the tree as we go).
+    modules_to_replace = []
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        leaf = name.split(".")[-1]
+        if leaf in skip_names:
+            continue
+        if leaf not in target_set:
+            continue
+        modules_to_replace.append((name, module))
+
+    print(
+        f"[qfura streaming] converting {len(modules_to_replace)} Linear "
+        f"layers via {cuda_device} (rank={btt_rank}, decomp={default_decomp_mode}, "
+        f"layout={quant_layout})"
+    )
+
+    bytes_saved_total = 0
+    names = []
+    for idx, (full_name, linear) in enumerate(modules_to_replace):
+        leaf = full_name.split(".")[-1]
+        layer_decomp_mode = default_decomp_mode
+        if normalized_decomp_mode is not None:
+            if leaf not in normalized_decomp_mode:
+                raise ValueError(f"Missing per-module decomp mode for '{leaf}'")
+            layer_decomp_mode = normalized_decomp_mode[leaf]
+
+        # Optional per-head factorization (matches non-streaming path).
+        output_factorization = None
+        input_factorization = None
+        if factorize_by_head:
+            cfg = getattr(model, "config", None)
+            if cfg is not None:
+                num_heads = getattr(cfg, "num_attention_heads", None)
+                num_kv_heads = getattr(cfg, "num_key_value_heads", num_heads)
+                head_dim = getattr(cfg, "head_dim", None)
+                if head_dim is None and num_heads is not None:
+                    hidden_size = getattr(cfg, "hidden_size", None)
+                    if hidden_size is not None:
+                        head_dim = hidden_size // num_heads
+                if num_heads is not None and head_dim is not None:
+                    if leaf == "q_proj":
+                        output_factorization = (num_heads, head_dim)
+                    elif leaf in ("k_proj", "v_proj"):
+                        output_factorization = (num_kv_heads, head_dim)
+                    elif leaf == "o_proj":
+                        input_factorization = (num_heads, head_dim)
+
+        # 1. Stage source weight on CUDA.
+        src_weight = linear.weight.data.to(device=cuda_device, non_blocking=False)
+        src_bias = (
+            linear.bias.data.to(device=cuda_device) if linear.bias is not None else None
+        )
+
+        # 2. Build BTTLayer on CUDA, init from staged weight.
+        btt_layer = BTTLayer(
+            in_features=linear.in_features,
+            out_features=linear.out_features,
+            rank=btt_rank,
+            bias=(linear.bias is not None),
+            lr_act=False,
+            decomp_mode=layer_decomp_mode,
+            init_mode=init_mode,
+            output_factorization=output_factorization,
+            input_factorization=input_factorization,
+        ).to(device=cuda_device, dtype=src_weight.dtype)
+        btt_layer.init_from_linear_weight(
+            src_weight,
+            src_bias,
+            s_merged_to=s_merged_to,
+            train_position=train_position,
+            convert_mode=convert_mode,
+        )
+
+        # 3. Configure trainability for this single layer (mirrors
+        # configure_blocktt_trainability's per-layer logic).
+        left_size = btt_layer.btt_l.numel()
+        right_size = btt_layer.btt_r.numel()
+        train_left, train_right = _resolve_blocktt_trainable_sides(
+            left_size, right_size, train_position
+        )
+        btt_layer.btt_l.requires_grad = train_left
+        btt_layer.btt_r.requires_grad = train_right
+        if hasattr(btt_layer, "btt_s") and btt_layer.btt_s is not None:
+            btt_layer.btt_s.requires_grad = (s_merged_to == "keep_trainable")
+        if btt_layer.bias is not None:
+            btt_layer.bias.requires_grad = True  # bias rides with the trainable side
+
+        # 4. NF4-quantize the frozen core in place.
+        bf16_bytes_pre = (
+            btt_layer.btt_r.numel() * 2 if not train_right else btt_layer.btt_l.numel() * 2
+        )
+        quantize_frozen_core_(btt_layer, layout=quant_layout)
+        bytes_saved_total += bf16_bytes_pre - bf16_bytes_pre // 4  # 4-bit = 1/4 of bf16
+
+        # 5. Splice into model tree, freeing the original Linear (and its CPU bf16 weight).
+        path = full_name.split(".")
+        parent = model
+        for key in path[:-1]:
+            parent = getattr(parent, key)
+        setattr(parent, path[-1], btt_layer)
+
+        # Free the staged source weight; the BTT layer now holds its own NF4 copy.
+        del src_weight, src_bias, linear
+        names.append(full_name)
+
+        if (idx + 1) % progress_every == 0 or (idx + 1) == len(modules_to_replace):
+            torch.cuda.synchronize()
+            mem_alloc = torch.cuda.memory_allocated(cuda_device) / 1e9
+            mem_peak = torch.cuda.max_memory_allocated(cuda_device) / 1e9
+            print(
+                f"[qfura streaming] {idx+1}/{len(modules_to_replace)} done "
+                f"(GPU alloc={mem_alloc:.1f}GB, peak={mem_peak:.1f}GB)"
+            )
+            torch.cuda.reset_peak_memory_stats(cuda_device)
+
+    return {
+        "num_converted": len(modules_to_replace),
+        "bytes_saved": bytes_saved_total,
+        "names": names,
+        "decomp_mode_used": default_decomp_mode if default_decomp_mode is not None else "(per-module dict)",
     }
 
 

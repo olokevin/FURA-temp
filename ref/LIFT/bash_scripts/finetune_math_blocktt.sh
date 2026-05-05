@@ -49,7 +49,7 @@ export WANDB_RESUME="${WANDB_RESUME:-allow}"
 
 echo $MODEL
 
-OUTPUT=${OUTPUT_SRC_DIR}/math/${MODEL}/blocktt-calib_${calib_mode}-lr_${lr}-decomp_${decomp_mode}_pos_${train_position}-rank_${blocktt_rank}-smerge_${s_merged_to}-type_${trainable_type}-seed_${seed}
+OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/math/${MODEL}/blocktt-calib_${calib_mode}-lr_${lr}-decomp_${decomp_mode}_pos_${train_position}-rank_${blocktt_rank}-smerge_${s_merged_to}-type_${trainable_type}-seed_${seed}}"
 run_name="${run_name:-$(basename "$OUTPUT")}"
 
 mkdir -p $OUTPUT
@@ -62,7 +62,7 @@ accelerate launch \
     --mixed_precision="bf16" \
     src/finetune_blocktt.py \
     --model_name_or_path ${MODEL} \
-    --per_device_train_batch_size 2 \
+    --per_device_train_batch_size ${PER_DEVICE_TRAIN_BS:-2} \
     --per_device_eval_batch_size 16 \
     --logging_steps 10 \
     --max_seq_len 2048 \
@@ -70,7 +70,7 @@ accelerate launch \
     --weight_decay 0. \
     --num_train_epochs 3 \
     --mixed_precision bf16 \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps ${GRAD_ACC_STEPS:-8} \
     --lr_scheduler_type linear \
     --num_warmup_steps 0.03 \
     --seed ${seed} \

@@ -447,6 +447,65 @@ class TrainerBase(object):
                             replace_m.bias.requires_grad = True
                             del p
 
+        if self.args.use_fura:
+            print("apply fura (BlockTT) tuning")
+            import sys as _sys
+            _project_root = "/home/yequan/Project/lora/lora-without-regret"
+            if _project_root not in _sys.path:
+                _sys.path.insert(0, _project_root)
+            from btt_layer import (
+                convert_linear_to_btt,
+                BTTLayer,
+                _resolve_blocktt_trainable_sides,
+            )
+
+            # DoRA filters with `dora_targets=["layers"]` AND leaf in q/v_proj.
+            # Audit the model for q/v Linears outside `.layers.` paths and refuse
+            # to convert them (matches DoRA's scope; no-op for vanilla VL-BART).
+            _qv_outside = [n for n, m in self.model.named_modules()
+                           if isinstance(m, nn.Linear)
+                           and n.split(".")[-1] in ("q_proj", "v_proj")
+                           and "layers" not in n]
+            assert not _qv_outside, (
+                f"Refusing to wrap q/v Linears outside .layers.: {_qv_outside}. "
+                "DoRA's lora_settings path skips these; fura must too for parity."
+            )
+            convert_linear_to_btt(
+                self.model,
+                btt_rank=self.args.blocktt_rank,
+                decomp_mode=self.args.decomp_mode,
+                include_names=["q_proj", "v_proj"],
+                skip_names=("lm_head",),
+                s_merged_to=self.args.s_merged_to,
+                train_position=self.args.train_position,
+                convert_mode=self.args.convert_mode,
+                model_config=self.model.config,
+            )
+
+            # Additive trainability: set BTT cores trainable without disturbing
+            # other params already flipped to requires_grad=True earlier in this method.
+            num_btt = 0
+            tuned = 0
+            for _name, _module in self.model.named_modules():
+                if not isinstance(_module, BTTLayer):
+                    continue
+                num_btt += 1
+                _train_left, _train_right = _resolve_blocktt_trainable_sides(
+                    left_size=_module.btt_l.numel(),
+                    right_size=_module.btt_r.numel(),
+                    train_position=self.args.train_position,
+                )
+                _module.btt_l.requires_grad = _train_left
+                _module.btt_r.requires_grad = _train_right
+                if _module.btt_s is not None:
+                    _module.btt_s.requires_grad = (self.args.s_merged_to == "keep_trainable")
+                tuned += int(_train_left) + int(_train_right)
+            _trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            _total = sum(p.numel() for p in self.model.parameters())
+            print(
+                f"fura: replaced {num_btt} Linears (q_proj,v_proj), tuned cores={tuned}, "
+                f"trainable={_trainable}/{_total} ({100.0 * _trainable / max(_total, 1):.3f}%)"
+            )
 
         if self.args.unfreeze_bias:
             targets = ["bias"]
@@ -725,3 +784,62 @@ class TrainerBase(object):
         if self.verbose:
             print('Model loaded from ', path)
             pprint(results)
+
+    # ---------- Resume support: full training-state bundle ----------
+    def save_bundle(self, path, epoch, global_step):
+        """Save model + optim + scheduler + scaler + epoch + global_step + RNG."""
+        if not os.path.isdir(self.args.output):
+            os.makedirs(self.args.output, exist_ok=True)
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        bundle = {
+            'model': model.state_dict(),
+            'optim': self.optim.state_dict() if hasattr(self, 'optim') else None,
+            'scheduler': self.lr_scheduler.state_dict() if (hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None) else None,
+            'scaler': self.scaler.state_dict() if (hasattr(self, 'scaler') and self.scaler is not None) else None,
+            'epoch': int(epoch),
+            'global_step': int(global_step),
+            'torch_rng': torch.get_rng_state(),
+            'cuda_rng': torch.cuda.get_rng_state_all(),
+        }
+        try:
+            import numpy as _np, random as _random
+            bundle['numpy_rng'] = _np.random.get_state()
+            bundle['python_rng'] = _random.getstate()
+        except Exception:
+            pass
+        tmp = path + '.tmp'
+        torch.save(bundle, tmp)
+        os.replace(tmp, path)
+        if self.verbose:
+            print(f'[resume] saved bundle to {path} (epoch={epoch}, global_step={global_step})')
+
+    def load_bundle(self, path, loc=None):
+        """Restore everything saved by save_bundle. Returns (start_epoch, global_step)."""
+        if loc is None and hasattr(self.args, 'gpu'):
+            loc = f'cuda:{self.args.gpu}'
+        bundle = torch.load(path, map_location=loc)
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        results = model.load_state_dict(bundle['model'], strict=False)
+        if self.verbose:
+            print(f'[resume] loaded model from {path}')
+            pprint(results)
+        if hasattr(self, 'optim') and bundle.get('optim') is not None:
+            self.optim.load_state_dict(bundle['optim'])
+        if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None and bundle.get('scheduler') is not None:
+            self.lr_scheduler.load_state_dict(bundle['scheduler'])
+        if hasattr(self, 'scaler') and self.scaler is not None and bundle.get('scaler') is not None:
+            self.scaler.load_state_dict(bundle['scaler'])
+        try:
+            torch.set_rng_state(bundle['torch_rng'].cpu() if hasattr(bundle['torch_rng'], 'cpu') else bundle['torch_rng'])
+            if bundle.get('cuda_rng') is not None:
+                torch.cuda.set_rng_state_all(bundle['cuda_rng'])
+            if bundle.get('numpy_rng') is not None:
+                import numpy as _np
+                _np.random.set_state(bundle['numpy_rng'])
+            if bundle.get('python_rng') is not None:
+                import random as _random
+                _random.setstate(bundle['python_rng'])
+        except Exception as e:
+            if self.verbose:
+                print(f'[resume] warning: failed to restore RNG state: {e}')
+        return int(bundle.get('epoch', 0)) + 1, int(bundle.get('global_step', 0))

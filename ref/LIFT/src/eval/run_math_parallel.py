@@ -177,6 +177,26 @@ def main(args):
     weighted_acc = correct/len(t_test_data)
     print_rank_0("Result {:.4f}, total: {}".format(weighted_acc * 100, len(t_test_data)))
 
+    if accelerator.is_main_process and not args.no_wandb:
+        if args.wandb_project and args.wandb_run_id:
+            import wandb
+
+            run = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_run_name,
+                id=args.wandb_run_id,
+                resume="must",
+            )
+            metric_key = f"eval/{args.dataset}/accuracy"
+            total_key = f"eval/{args.dataset}/total"
+            wandb.log({metric_key: weighted_acc, total_key: len(t_test_data)})
+            run.summary[metric_key] = weighted_acc
+            run.summary[total_key] = len(t_test_data)
+            wandb.finish()
+        else:
+            print_rank_0(
+                "Skipping W&B eval sync because wandb_project or wandb_run_id is missing."
+            )
 
     with open(os.path.join(args.output_dir, f"model_predictions.jsonl"), "w") as fout:
         for example in save_outputs:
@@ -206,6 +226,29 @@ if __name__ == "__main__":
                         help='Inference data type')
     parser.add_argument("--per_device_eval_batch_size", type=int, default=16, help="batch size for evaluation.")
     parser.add_argument("--adapter_name", type=str, default=None)
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=os.environ.get("WANDB_PROJECT"),
+        help="Weights & Biases project name.",
+    )
+    parser.add_argument(
+        "--wandb_run_name",
+        type=str,
+        default=os.environ.get("WANDB_NAME"),
+        help="Weights & Biases run name.",
+    )
+    parser.add_argument(
+        "--wandb_run_id",
+        type=str,
+        default=os.environ.get("WANDB_RUN_ID"),
+        help="Weights & Biases run id for resuming and appending eval metrics.",
+    )
+    parser.add_argument(
+        "--no_wandb",
+        action="store_true",
+        help="Disable Weights & Biases logging.",
+    )
     args = parser.parse_args()
 
     main(args) 

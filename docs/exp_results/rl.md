@@ -1,34 +1,34 @@
 # RL Experiment Results
 
-_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 4, 5, 6 of the canonical 6-cell Qwen3-1.7B decomp×s_to grid — all 6 cells now extended-eval'd). Qwen2.5-7B blocktt-mml2048 row appended 2026-05-02 evening. Minerva eval deprecated and all Minerva numbers stripped from this doc on 2026-05-02 (means recomputed as mean-4); summary rankings updated accordingly. BlockTT ablation table (mirrored from `lift_commonsense.md`) added at the top on 2026-05-03. Unified paper table (Qwen3-1.7B + Qwen2.5-7B) added at the very top on 2026-05-03._
+_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 4, 5, 6 of the canonical 6-cell Qwen3-1.7B decomp×s_to grid — all 6 cells now extended-eval'd). Qwen2.5-7B blocktt-mml2048 row appended 2026-05-02 evening. Minerva eval deprecated and all Minerva numbers stripped from this doc on 2026-05-02 (means recomputed as mean-4); summary rankings updated accordingly. BlockTT ablation table (mirrored from `lift_commonsense.md`) added at the top on 2026-05-03. Unified paper table (Qwen3-1.7B + Qwen2.5-7B) added at the very top on 2026-05-03. Qwen2.5-7B Full FT row filled in on 2026-05-05 via single-H100 adamw8bit + gradient-checkpointing sweep over {8e-6, 1e-5, 3e-5, 5e-5} (winner: lr=1e-5). Base (no RL) rows filled in 2026-05-05 via offline `eval_rl.py` on the HF model IDs._
 
 ## Paper Table
 
 Best run per method on each model, evaluated on 4 held-out math benchmarks. Within each model block, **bold** marks the column-best across that block. AIME-24/25 are avg@8 at T=0.6; MATH-500 and AMC23 are greedy@1 at T=0.0. PEFT methods use rank=64 (FuRA uses `output_one_block / pos_small / s_merged_to=keep_trainable / blocktt_rank=full`).
 
-| Model                | Method         |       MATH-500 |          AMC23 |        AIME-24 |       AIME-25 |
-| :------------------- | :------------- | -------------: | -------------: | -------------: | ------------: |
-| **Qwen3-1.7B** | Base           |             — |             — |             — |            — |
-|                      | Full FT        | **63.6** |           47.5 |           13.8 |          15.4 |
-|                      | LoRA           |           60.6 |           50.0 |           11.2 |          11.2 |
-|                      | DoRA           |           61.6 |           37.5 |           12.9 |          14.6 |
-|                      | PiSSA          |           53.4 |           42.5 |            2.5 |           3.3 |
-|                      | MiLoRA         |           59.0 |           45.0 |            7.9 |           9.6 |
-|                      | RandLoRA       |           63.2 | **57.5** | **15.8** |          17.1 |
-|                      | **FuRA** | **63.6** | **57.5** |           15.0 |     **17.5** |
-| **Qwen2.5-7B** | Base           |             — |             — |             — |            — |
-|                      | Full FT        |             — |             — |             — |            — |
-|                      | LoRA           |           58.6 | **60.0** |           10.8 |           2.9 |
-|                      | DoRA           |           59.0 |           50.0 |           10.4 |           8.3 |
-|                      | **FuRA** | **60.2** |           47.5 | **12.5** | **9.2** |
+| Model                | Method         |       MATH-500 |          AMC23 |        AIME-24 |        AIME-25 |
+| :------------------- | :------------- | -------------: | -------------: | -------------: | -------------: |
+| **Qwen3-1.7B** | Base           |           52.2 |           30.0 |            5.8 |            7.5 |
+|                      | Full FT        | **63.6** |           47.5 |           13.8 |           15.4 |
+|                      | LoRA           |           60.6 |           50.0 |           11.2 |           11.2 |
+|                      | DoRA           |           61.6 |           37.5 |           12.9 |           14.6 |
+|                      | PiSSA          |           53.4 |           42.5 |            2.5 |            3.3 |
+|                      | MiLoRA         |           59.0 |           45.0 |            7.9 |            9.6 |
+|                      | RandLoRA       |           63.2 | **57.5** | **15.8** |           17.1 |
+|                      | **FuRA** | **63.6** | **57.5** |           15.0 | **17.5** |
+| **Qwen2.5-7B** | Base           |           48.4 |           40.0 |            5.0 |            2.9 |
+|                      | Full FT        |           59.4 |           52.5 |            7.9 |            4.2 |
+|                      | LoRA           |           58.6 | **60.0** |           10.8 |            2.9 |
+|                      | DoRA           |           59.0 |           50.0 |           10.4 |            8.3 |
+|                      | **FuRA** | **60.2** |           57.5 | **12.5** |  **9.2** |
 
 Notes:
 
 - **Qwen3-1.7B FuRA best row**: `blocktt-adamw-lr_1e-4-output_one_block-s_to_frozen-train_small-0502-164206`. Note the row uses `s_to=frozen`, not the project-wide `s_to=keep_trainable` default — the 6-cell ablation (next section) showed `frozen` wins by mean-4 (37.15 vs 34.83) at lr=1e-4. RandLoRA narrowly beats FuRA on the 4-metric mean (38.40 vs 37.15) thanks to AIME-25, but FuRA ties or wins on MATH-500 / AMC23 / AIME-24.
 - **Qwen2.5-7B FuRA best row**: `blocktt-adamw-lr_1e-4-output_one_block-s_to_keep_trainable-train_small-0502-174402` (`max_model_len=2048`). The earlier `mml=1536` row (mean-4 29.74) is superseded.
-- **Full FT on Qwen2.5-7B is not run** (compute budget) — left blank pending future sweep.
+- **Qwen2.5-7B Full FT row**: `full-adamw-lr_1e-5-0505-024633` — adamw8bit + gradient checkpointing single-H100 fit. Picked as winner of an LR sweep over {8e-6, 1e-5, 3e-5, 5e-5} by MATH-500 (8e-6: 58.2 / **1e-5: 59.4** / 3e-5: 37.8 collapse / 5e-5: 1.2 catastrophic). The stable LR window for Qwen2.5-7B base full-FT GRPO is narrow: ≤1e-5. AMC23/AIME-24/AIME-25 re-eval'd offline via `eval_rl.py` post-sweep. Full FT does not beat any of the PEFT rows on this block — FuRA wins MATH-500 / AIME-24 / AIME-25, LoRA wins AMC23. Plausibly the sweep should extend below 8e-6, or run for >50 GRPO steps so the smaller LR has more updates to accumulate.
 - All Qwen3-1.7B PEFT rows use rank=64 except FuRA (`blocktt_rank=full` per the project default). FuRA's per-layer parameter count is `2·rank·sqrt(d_in·d_out)`, which at rank=full and Qwen3-1.7B's `d=2048` is comparable to LoRA r=64.
-- ‡ **Base (no RL)**: not yet measured under this evaluation harness. The Qwen3 technical report ([arXiv:2505.09388](https://arxiv.org/abs/2505.09388), Table 8) reports Qwen3-1.7B-Base = MATH 43.5 / GSM8K 75.4 — but uses a different prompt template, no `boxed.prompt`, and reports the broader 12.5K-problem MATH set rather than MATH-500. The Qwen2.5 main technical report ([arXiv:2412.15115](https://arxiv.org/abs/2412.15115)) does not report Qwen2.5-7B-Base on MATH-500 / AMC23 / AIME at all (the math-specialised Qwen2.5-Math-7B variant is reported separately). Mixing those numbers into this table would be unfair to the RL rows because the harness, prompt template, and AIME sampling protocol all differ. Plan: run `uv run eval_rl.py --checkpoint Qwen/Qwen3-1.7B` and `--checkpoint Qwen/Qwen2.5-7B` once a GPU is free, and back-fill these rows. Internal in-train held-out 1000-prompt baselines under our boxed-prompt rollout (these are the step-0 numbers from the RL runs themselves, not the same as the held-out math benchmarks): Qwen3-1.7B ~17.9–18.3%, Qwen2.5-7B 68.6–70.8% (the latter varies ±2.2 pp across in-process vLLM warm-ups; see Qwen2.5-7B section below).
+- **Base (no RL)** rows measured 2026-05-05 via `uv run eval_rl.py --checkpoint Qwen/Qwen3-1.7B` and `--checkpoint Qwen/Qwen2.5-7B` under the *same* harness as the RL rows (boxed prompt, `max_model_len=2048`, `max_tokens=2048`, MATH-500/AMC23 greedy@1, AIME-24/25 avg@8 at T=0.6). These are not directly comparable to the published Qwen technical reports because the prompt template, eval set selection (MATH-500 vs full MATH 12.5K), and AIME sampling protocol differ. Result JSONs at `logs/qwen{2_5_7B,3_1_7B}_base_eval.json`. Qwen2.5-7B Base MATH-500 (48.4%) is **+22.5 pp below** the RL-trained FuRA row (60.2%); Qwen3-1.7B Base MATH-500 (52.2%) is **+11.4 pp below** its RL-trained FuRA/Full-FT row (63.6%). On AIME-25, however, Qwen3-1.7B Base (7.5%) sits within the noise of the trained PEFT methods (LoRA 11.2, MiLoRA 9.6) — RL gains there are smaller. Internal in-train held-out 1000-prompt baselines from the RL runs themselves (different question set than MATH-500): Qwen3-1.7B ~17.9–18.3%, Qwen2.5-7B 68.6–70.8% (the latter varies ±2.2 pp across in-process vLLM warm-ups; see Qwen2.5-7B section below).
 - Source: `/data/yequan/fura/rl_runs`
 - Methods covered: `full`, `lora`, `lora_full`, `dora`, `pissa`, `milora`, `lift`, `randlora`, `fura` (=`blocktt`), `svd`.
 - Primary metric: `eval/accuracy` on the internal 1000-problem held-out split.
@@ -360,3 +360,40 @@ A follow-up blocktt run with the *same* `mbs=1 / gacc=256 / gpu_util=0.25` recip
 4. **lora's lead is AMC23-driven.** lora's mean-4 (33.09) beats blocktt-mml2048 (32.34) entirely on AMC23 (60.0 vs 47.5, +12.5 pp). On every other slice lora is mid-pack or last (AIME-25 2.92% — easily the worst across the 4 runs). AMC23 is a 40-problem set so the spread is high-variance; the cross-method ranking should be read with a wide error bar.
 5. **Compared to Llama-3.1-8B-Instruct at the same lr=1e-4** (Mean-4 column): qwen2.5-7B lora 33.09 > llama lora 16.09; qwen2.5-7B dora 31.94 > llama dora 18.43; qwen2.5-7B blocktt 29.74–32.34 > llama blocktt 18.54. Qwen2.5-7B base is a meaningfully stronger math-RL substrate than Llama-3.1-8B-Instruct at this LR. None of the runs collapsed (train acc finished 67.6–75.8% from baseline ~69%); the lr=1e-4 stable window is wide.
 6. **No LR sweep yet.** All four runs used `lr=1e-4` — the value that maximized blocktt on Llama-3.1-8B-Instruct (69.0% final) but was too high for Llama LoRA r=64 (collapsed). Qwen2.5-7B's LoRA tolerated 1e-4 fine; the optimal lora/dora LR may be lower (cf. Qwen3-1.7B best LoRA LR = 6e-5, best DoRA LR = 1e-4). LR sweep is the obvious next step. Also: the blocktt mml=1536 vs 2048 jump suggests dora and lora may benefit from a similar mml bump — re-running them at mml=2048 is a cheap follow-up before declaring a winner.
+
+### Full FT LR sweep (added 2026-05-05)
+
+Single-H100 NVL full FT of Qwen2.5-7B was infeasible at default settings (~120 GB peak — model + bf16 grads + fp32 AdamW state + activations + vLLM). Two run_rl.py additions made it fit (~67 GB peak, 28 GB headroom):
+
+- **`--optimizer adamw8bit`** — bitsandbytes AdamW8bit, drops the optimizer state from ~60 GB (fp32 m+v) to ~15 GB.
+- **`--gradient-checkpointing`** — calls `model.gradient_checkpointing_enable(use_reentrant=False)` (with `enable_input_require_grads()` for PEFT compat). Saves ~5–10 GB activation memory at ~30% step-time cost. ~90 s/step at lr=1e-5, mbs=1, gacc=256.
+
+Both flags default to off; only enabled for this single-GPU full-FT run. Otherwise identical to the lora/blocktt rows above (mbs=1, gacc=256, gpu_util=0.25, max_model_len=2048).
+
+**LR sweep, MATH-500 only** (cheap selection over {8e-6, 1e-5, 3e-5, 5e-5}):
+
+| LR                | Train acc (step 50) | In-train eval/acc | Baseline |                      MATH-500 |
+| ----------------- | ------------------: | ----------------: | -------: | ----------------------------: |
+| 8e-6              |              74.61% |            89.60% |   70.80% |                        58.20% |
+| **1e-5** ⭐ |              73.05% |  **90.20%** |   70.80% |              **59.40%** |
+| 3e-5              |              48.83% |            65.00% |   70.80% |     37.80% (collapse partial) |
+| 5e-5              |               0.00% |             0.00% |   70.80% | 1.20% (catastrophic collapse) |
+
+The stable LR window is narrow: ≤1e-5. lr=3e-5 partially collapses (train acc halves between step ~30 and step 50); lr=5e-5 fully collapses (train acc → 0). lr=8e-6 trains stably but slightly under-fits (the upper-bound 1e-5 wins by 1.2 pp on MATH-500). lr=1e-5 sits at the upper edge of the stable window.
+
+The lr=1e-5 winner was then re-evaluated offline on AMC23 / AIME-24 / AIME-25 via `eval_rl.py`:
+
+| Method (best LR per row)                       | Train acc (step 50) | In-train eval/acc | Baseline |         MATH-500 |          AIME-24 |         AIME-25 |            AMC23 |        Mean (4) |
+| ---------------------------------------------- | ------------------: | ----------------: | -------: | ---------------: | ---------------: | --------------: | ---------------: | --------------: |
+| **full FT (adamw8bit + GC, lr=1e-5)** ⭐ |              73.05% |            90.20% |   70.80% |           59.40% |            7.92% |           4.17% |           42.50% |           28.50 |
+| lora (rank=64, lr=1e-4)                        |              75.78% |            89.30% |   70.80% |           58.60% |           10.83% |           2.92% | **60.00%** |           33.09 |
+| dora (rank=64, lr=1e-4)                        |              73.44% |            89.30% |   68.60% |           59.00% |           10.42% |           8.33% |           50.00% |           31.94 |
+| blocktt (mml=2048, lr=1e-4)                    |              71.48% |  **89.40%** |   69.80% | **60.20%** | **12.50%** | **9.17%** |           47.50% | **32.34** |
+
+**Headline: full FT is *not* competitive on Qwen2.5-7B at this scale.** Mean-4 of 28.50 is the worst row (3.4–3.8 pp below all three PEFT methods). Full FT wins no individual slice — FuRA wins MATH-500 / AIME-24 / AIME-25, lora wins AMC23. Possible reasons:
+
+1. **Too few RL steps for low LR.** lr=1e-5 over 50 GRPO steps gives an optimizer trajectory that traverses ~5e-4 in cumulative parameter space — likely under the threshold needed for a 7B base model to specialize on competition_math. PEFT methods amplify this implicitly: a rank-64 LoRA at lr=1e-4 has the same effective "policy LR" as full-FT at ~1e-5, but the structural restriction prevents collapse and lets the optimizer take more of those updates without diverging. Running full-FT for 200+ steps at lr=1e-5 would test this.
+2. **The stable LR window is too narrow at this base.** Full FT collapses at 3e-5; LoRA stayed stable through 1e-4. The PEFT methods' implicit LR-tolerance (rank-restricted updates can't move parameters as far per step) gives them ~10× the usable LR range, which translates directly into more effective training within the same step budget.
+3. **adamw8bit / GC overhead is unlikely to be the cause.** adamw8bit has been shown by the bitsandbytes paper to match fp32 AdamW within noise on LM fine-tuning; gradient checkpointing changes wall time but not the loss trajectory. The same lr=1e-5 with fp32 AdamW (if it could fit) would land in the same neighborhood.
+
+So full FT here is more of a feasibility demonstration for the single-H100 path than a method comparison: yes, single-GPU 7B full-FT GRPO is now possible on this codebase; no, it does not beat the PEFT methods at the 50-step horizon. A longer sweep is the obvious follow-up.

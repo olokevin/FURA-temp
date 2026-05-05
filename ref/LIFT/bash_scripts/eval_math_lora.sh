@@ -47,13 +47,35 @@ if [ -z "$CKPT" ]; then
     exit 1
 fi
 
-MODEL="$CKPT"
+# Resolve $CKPT against the dual-save layout introduced by finetune_*.py.
+# Prefer last/ over best/ (project default = save last model).
+# Override with EVAL_PREFER=best to pick best/ when both exist.
+if [ -f "${CKPT}/config.json" ]; then
+    MODEL="$CKPT"
+elif [ "${EVAL_PREFER:-last}" = "best" ] && [ -f "${CKPT}/best/config.json" ]; then
+    MODEL="${CKPT}/best"
+elif [ -f "${CKPT}/last/config.json" ]; then
+    MODEL="${CKPT}/last"
+elif [ -f "${CKPT}/best/config.json" ]; then
+    MODEL="${CKPT}/best"
+else
+    echo "Error: no usable checkpoint at ${CKPT}, ${CKPT}/last, or ${CKPT}/best (config.json missing)" >&2
+    exit 1
+fi
+echo "[eval_math_lora] resolved CKPT=${CKPT} -> MODEL=${MODEL}"
+
 OUTPUT_DIR="${MODEL}/math"
 
 SRC_DIR="${SRC_DIR:-/home/yequan/Project/lora/lora-without-regret/ref/LIFT}"
 DATA_DIR="${DATA_DIR:-LLM-Adapters/dataset}"
 
-datasets=(MultiArith gsm8k AddSub AQuA SingleEq SVAMP mawps)
+# Allow caller to override the dataset list via env var EVAL_DATASETS
+# (space-separated). Default = full 7-task math suite.
+if [ -n "${EVAL_DATASETS:-}" ]; then
+    read -r -a datasets <<< "$EVAL_DATASETS"
+else
+    datasets=(MultiArith gsm8k AddSub AQuA SingleEq SVAMP mawps)
+fi
 
 cd $SRC_DIR
 
@@ -79,6 +101,15 @@ for dataset in "${datasets[@]}"; do
         --base_model "$base_model"
         --output_dir "$OUTPUT"
     )
+    if [ -n "$wandb_project" ]; then
+        cmd+=(--wandb_project "$wandb_project")
+    fi
+    if [ -n "$wandb_run_name" ]; then
+        cmd+=(--wandb_run_name "$wandb_run_name")
+    fi
+    if [ -n "$wandb_run_id" ]; then
+        cmd+=(--wandb_run_id "$wandb_run_id")
+    fi
 
     "${cmd[@]}" 2> >(tee "$OUTPUT/eval_err.log" >&2) | tee "$OUTPUT/eval.log"
 done

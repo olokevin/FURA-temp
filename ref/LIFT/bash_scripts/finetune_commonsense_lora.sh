@@ -66,7 +66,7 @@ accelerate launch \
     --max_seq_len 2048 \
     --learning_rate ${lr} \
     --weight_decay 0. \
-    --num_train_epochs 3 \
+    --num_train_epochs ${num_train_epochs:-3} \
     --mixed_precision bf16 \
     --gradient_accumulation_steps 2 \
     --lr_scheduler_type linear \

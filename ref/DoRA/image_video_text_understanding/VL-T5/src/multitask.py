@@ -169,6 +169,18 @@ class Trainer(TrainerBase):
                 self.model = DDP(self.model, device_ids=[args.gpu],
                                  find_unused_parameters=True
                                  )
+
+        # Restore from a mid-training bundle if requested. Done AFTER DDP wrap
+        # because load_bundle does .module-aware loading and the optimizer state
+        # references parameter ids from the constructed optimizer.
+        self._resume_start_epoch = 0
+        self._resume_global_step = 0
+        if train and getattr(args, 'resume', None):
+            self._resume_start_epoch, self._resume_global_step = self.load_bundle(args.resume)
+            if self.verbose:
+                print(f'[resume] continuing from epoch={self._resume_start_epoch} '
+                      f'global_step={self._resume_global_step}')
+
         if self.verbose:
             print(f'It took {time() - start:.1f}s')
 
@@ -225,8 +237,9 @@ class Trainer(TrainerBase):
         if self.args.distributed:
             dist.barrier()
 
-        global_step = 0
-        for epoch in range(self.args.epochs):
+        global_step = self._resume_global_step
+        # If resuming, skip the already-completed epochs.
+        for epoch in range(self._resume_start_epoch, self.args.epochs):
             if self.start_epoch is not None:
                 epoch += self.start_epoch
             self.model.train()
@@ -350,6 +363,17 @@ class Trainer(TrainerBase):
                     param.grad = None
 
                 global_step += 1
+
+                # Periodic full-state checkpoint for resume.
+                if (self.verbose
+                        and self.args.save_steps > 0
+                        and global_step > 0
+                        and global_step % self.args.save_steps == 0):
+                    self.save_bundle(
+                        os.path.join(self.args.output, f'step{global_step}.ckpt'),
+                        epoch=epoch,
+                        global_step=global_step,
+                    )
 
                 for k, v in results.items():
                     if k in epoch_results:
@@ -567,6 +591,13 @@ class Trainer(TrainerBase):
         # Test Set
         if self.verbose:
             self.save("LAST")
+            # Also save a resume bundle so a re-launch with --resume can skip
+            # straight to eval / further training without re-running epochs.
+            self.save_bundle(
+                os.path.join(self.args.output, 'last.ckpt'),
+                epoch=self.args.epochs - 1,
+                global_step=global_step,
+            )
 
             log_str = ''
             wandb_log_dict = {}

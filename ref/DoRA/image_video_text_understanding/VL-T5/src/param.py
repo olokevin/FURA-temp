@@ -202,9 +202,25 @@ def parse_args(parse=True, **optional_kwargs):
     parser.add_argument('--use_lm_head_adapter', action="store_true")
 
     # dora
-    parser.add_argument('--use_dora', action="store_true")    
+    parser.add_argument('--use_dora', action="store_true")
     parser.add_argument('--lora_settings', action="store_true")
     parser.add_argument('--dora_simple', action="store_true")
+
+    # fura (BlockTT) - defaults match project-wide CLAUDE.md (see /home/yequan/Project/lora/lora-without-regret/CLAUDE.md)
+    parser.add_argument('--use_fura', action="store_true")
+    parser.add_argument('--blocktt_rank', type=str, default="full")
+    parser.add_argument('--decomp_mode', type=str, default="output_one_block")
+    parser.add_argument('--train_position', type=str, default="small", choices=["small", "large", "both"])
+    parser.add_argument('--s_merged_to', type=str, default="keep_trainable")
+    parser.add_argument('--convert_mode', type=str, default="svd", choices=["svd", "qr"])
+
+    # Checkpoint resume: --save_steps N writes a full training-state bundle every N
+    # global steps (in addition to the LAST.pth at end of training). --resume PATH
+    # restores model+optim+scheduler+scaler+epoch+global_step+RNG and continues.
+    parser.add_argument('--save_steps', type=int, default=0,
+                        help='Save full training state every N global steps (0=off)')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Path to a *.ckpt bundle written by --save_steps')
 
     # unfreeze_layer_norm_encoder or decoder
     parser.add_argument('--unfreeze_encoder_layer_norms', action="store_true")

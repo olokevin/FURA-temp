@@ -26,12 +26,30 @@ MEM_FLAGS=(
   --max-model-len 2048
 )
 
+# Optional LR-scheduler flags (default: fixed lr, matching run_rl.py default of --lr-scheduler none).
+# Set LR_SCHEDULER=linear WARMUP_RATIO=0.03 to mirror the LIFT recipe (linear decay to 0,
+# 3% warmup), or LR_SCHEDULER=cosine with WARMUP_RATIO=... MIN_LR_RATIO=... for cosine.
+SCHED_FLAGS=()
+if [[ -n "${LR_SCHEDULER:-}" ]]; then
+  SCHED_FLAGS+=(--lr-scheduler "$LR_SCHEDULER")
+fi
+if [[ -n "${WARMUP_RATIO:-}" ]]; then
+  SCHED_FLAGS+=(--warmup-ratio "$WARMUP_RATIO")
+fi
+if [[ -n "${MIN_LR_RATIO:-}" ]]; then
+  SCHED_FLAGS+=(--min-lr-ratio "$MIN_LR_RATIO")
+fi
+
 run_full()
 {
   local train_mode="full"
   local lr="${LR:-1e-5}"
   local optimizer="${OPTIMIZER:-adamw}"
-  local run_name="${train_mode}-${optimizer}-lr_${lr}"
+  local sched_tag=""
+  if [[ -n "${LR_SCHEDULER:-}" ]]; then
+    sched_tag="-${LR_SCHEDULER}_w${WARMUP_RATIO:-0}"
+  fi
+  local run_name="${train_mode}-${optimizer}-lr_${lr}${sched_tag}"
   local device="${DEVICE:-2}"
   local -a cfg_suffix_args=()
   if [[ -n "${CFG_SUFFIX:-}" ]]; then
@@ -44,6 +62,7 @@ run_full()
     --lr "$lr" \
     --optimizer "$optimizer" \
     "${MEM_FLAGS[@]}" \
+    "${SCHED_FLAGS[@]}" \
     --model-id "$MODEL_ID" \
     --wandb-project "$WANDB_PROJECT" \
     --wandb-run-name "$run_name" \
@@ -58,7 +77,11 @@ run_lora()
   local lora_rank="${LORA_RANK:-64}"
   local trainable_type="${TRAINABLE_TYPE:-all}"
   local name_suffix="${NAME_SUFFIX:-}"
-  local run_name="${train_mode}-${optimizer}-lr_${lr}-rank_${lora_rank}${name_suffix}"
+  local sched_tag=""
+  if [[ -n "${LR_SCHEDULER:-}" ]]; then
+    sched_tag="-${LR_SCHEDULER}_w${WARMUP_RATIO:-0}"
+  fi
+  local run_name="${train_mode}-${optimizer}-lr_${lr}-rank_${lora_rank}${sched_tag}${name_suffix}"
   local device="${DEVICE:-2}"
   local vllm_url="${VLLM_URL:-http://localhost:8000}"
   local -a vllm_url_args=()
@@ -78,6 +101,7 @@ run_lora()
     --lora-rank "$lora_rank" \
     --trainable-type "$trainable_type" \
     "${MEM_FLAGS[@]}" \
+    "${SCHED_FLAGS[@]}" \
     "${vllm_url_args[@]}" \
     --model-id "$MODEL_ID" \
     --wandb-project "$WANDB_PROJECT" \
@@ -95,7 +119,11 @@ run_blocktt()
   local s_merged_to="${S_MERGED_TO:-keep_trainable}"
   local device="${DEVICE:-2}"
   local name_suffix="${NAME_SUFFIX:-}"
-  local run_name="${train_mode}-${optimizer}-lr_${lr}-${decomp_mode}-s_to_${s_merged_to}-train_${train_position}${name_suffix}"
+  local sched_tag=""
+  if [[ -n "${LR_SCHEDULER:-}" ]]; then
+    sched_tag="-${LR_SCHEDULER}_w${WARMUP_RATIO:-0}"
+  fi
+  local run_name="${train_mode}-${optimizer}-lr_${lr}-${decomp_mode}-s_to_${s_merged_to}-train_${train_position}${sched_tag}${name_suffix}"
   local -a cfg_suffix_args=()
   if [[ -n "${CFG_SUFFIX:-}" ]]; then
     # Intended for trusted local overrides, e.g. CFG_SUFFIX="--flag --arg value".
@@ -116,6 +144,7 @@ run_blocktt()
     --s-merged-to "$s_merged_to" \
     --train-position "$train_position" \
     "${MEM_FLAGS[@]}" \
+    "${SCHED_FLAGS[@]}" \
     --model-id "$MODEL_ID" \
     --wandb-project "$WANDB_PROJECT" \
     --wandb-run-name "$run_name" \

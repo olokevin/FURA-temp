@@ -87,12 +87,22 @@ def resolve_blocktt_rank(rank_arg):
     return rank
 
 
-def materialize_btt_to_linear(model):
+def materialize_btt_to_linear(model, offload_device=None):
     """Replace all BTTLayer modules with nn.Linear containing materialized dense weights.
 
     This makes the model saveable/loadable as a standard HF checkpoint.
     QBTTLayer inherits from BTTLayer and its materialize_dense_weight() handles
     dequantization internally, so this function works for both BTTLayer and QBTTLayer.
+
+    Args:
+      offload_device: if not None (e.g. torch.device("cpu")), each materialized
+        nn.Linear is moved here right after construction, AND every other
+        nn.Module already on GPU is offloaded once the BTT modules are dealt
+        with. This bounds the GPU peak by one bf16 layer rather than the full
+        materialised model. Required for >=30B base models on a single H100,
+        where the full bf16 model is bigger than GPU memory. The original
+        BTT/QBTT modules are also moved off-GPU before being discarded so
+        their NF4 buffers don't linger.
     """
     replacements = []
     for name, module in model.named_modules():
@@ -101,16 +111,26 @@ def materialize_btt_to_linear(model):
 
     for name, btt_module in replacements:
         dense_weight = btt_module.materialize_dense_weight()
+        target_device = offload_device if offload_device is not None else dense_weight.device
         linear = nn.Linear(
             btt_module.in_features,
             btt_module.out_features,
             bias=btt_module.bias is not None,
-            device=dense_weight.device,
+            device=target_device,
             dtype=dense_weight.dtype,
         )
-        linear.weight.data.copy_(dense_weight)
+        # If offloading: stage the dense bf16 tensor through host RAM so the
+        # GPU memory occupied by the dequantised QBTT weight + the new linear
+        # is freed in the same loop iteration.
+        if offload_device is not None and dense_weight.device.type != offload_device.type:
+            linear.weight.data.copy_(dense_weight.to(offload_device))
+        else:
+            linear.weight.data.copy_(dense_weight)
         if btt_module.bias is not None:
-            linear.bias.data.copy_(btt_module.bias.data)
+            bias = btt_module.bias.data
+            if offload_device is not None and bias.device.type != offload_device.type:
+                bias = bias.to(offload_device)
+            linear.bias.data.copy_(bias)
 
         # Navigate to parent and replace the child
         parts = name.split(".")
@@ -119,7 +139,26 @@ def materialize_btt_to_linear(model):
             parent = getattr(parent, part)
         setattr(parent, parts[-1], linear)
 
-    print(f"Materialized {len(replacements)} BTTLayer modules to nn.Linear")
+        # Drop our reference to the dequantised buffer immediately. The old
+        # btt_module's NF4 buffers are still alive on GPU until garbage
+        # collection because the `replacements` list holds a strong ref; we
+        # explicitly clear it after the loop.
+        del dense_weight
+        if offload_device is not None and offload_device.type == "cpu":
+            torch.cuda.empty_cache()
+
+    # Drop the last batch of strong refs (the BTT modules), then nuke the
+    # GPU pool so the freed NF4 + dequant buffers actually become available.
+    n_replaced = len(replacements)
+    replacements.clear()
+    if offload_device is not None:
+        # Also offload any non-BTT modules still on GPU (embed_tokens,
+        # layernorms, lm_head). This puts the entire materialised model on
+        # the host before save_pretrained walks it.
+        model.to(offload_device)
+        torch.cuda.empty_cache()
+
+    print(f"Materialized {n_replaced} BTTLayer modules to nn.Linear" + (" (offloaded to CPU)" if offload_device is not None else ""))
     return model
 
 
@@ -184,6 +223,58 @@ def parse_args():
     parser.add_argument("--save_interval", type=int, default=500)
     parser.add_argument(
         "--use_flash_attn", type=str, default="False",
+    )
+    parser.add_argument(
+        "--prompt_style",
+        type=str,
+        choices=["lift", "pissa"],
+        default="lift",
+        help=(
+            "Which training prompt + target format to use. "
+            "'lift' (default): LIFT BASE_PROMPT (literal '<s>', trailing whitespace, "
+            "newline before response, target '<output> <eos>'). "
+            "'pissa': PiSSA's clean format (no literal <s>, no trailing whitespace, "
+            "target '<output>\\n<eos>'). Use 'pissa' to align with the published "
+            "QPiSSA recipe on MetaMathQA."
+        ),
+    )
+    parser.add_argument(
+        "--trainable_param_dtype",
+        type=str,
+        choices=["bf16", "fp32"],
+        default="bf16",
+        help=(
+            "After streaming/direct conversion, upcast trainable BTT params "
+            "(btt_l/r/s + bias) to this dtype. fp32 matches the QPiSSA paper "
+            "recipe; bf16 is the default qfura recipe (faster, less memory)."
+        ),
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        choices=["paged_adamw_8bit", "adamw"],
+        default="paged_adamw_8bit",
+        help=(
+            "'paged_adamw_8bit' (default qfura): bnb 8-bit moments, paged for "
+            "OOM safety. 'adamw': torch.optim.AdamW with fp32 moments — matches "
+            "QPiSSA paper. Only meaningful at fp32 trainable_param_dtype."
+        ),
+    )
+    parser.add_argument(
+        "--load_strategy",
+        type=str,
+        choices=["direct", "layer_stream"],
+        default="direct",
+        help=(
+            "How to materialise the bf16 base into a qfura model on GPU. "
+            "'direct': load full bf16 model on GPU, then BTT-decompose, then "
+            "NF4-quantise. Fits up to ~13B on a 94 GB H100. "
+            "'layer_stream': load full bf16 model on CPU, then walk every "
+            "target Linear, stage its weight on GPU, BTT-decompose + NF4-"
+            "quantise it, replace, and free. Peak GPU memory is bounded by "
+            "the largest single Linear (~470 MB for Llama-3-70B's down_proj). "
+            "Required for ≥30B models on a single H100."
+        ),
     )
 
     # BlockTT-specific arguments
@@ -309,11 +400,21 @@ def main():
     tokenizer = load_hf_tokenizer(args.model_name_or_path, fast_tokenizer=True)
     tokenizer.model_max_length = args.max_seq_len
 
-    # Load model
+    # Load model.
+    # `load_strategy=direct` (default): load on accelerator.device in bf16. The
+    # full bf16 model + intermediate decomposition state must fit; OK up to ~13B
+    # on a 94 GB H100.
+    # `load_strategy=layer_stream`: load on CPU in bf16 (we have plenty of RAM),
+    # then BTT-decompose + NF4-quantise each target Linear via a brief CUDA
+    # staging round-trip. Peak GPU memory bounded by the largest single Linear.
     config = AutoConfig.from_pretrained(args.model_name_or_path)
     model_kwargs = {"torch_dtype": torch.bfloat16}
     if args.use_flash_attn == "True":
         model_kwargs["use_flash_attention_2"] = True
+    if args.load_strategy == "layer_stream":
+        # device_map="cpu" keeps the whole bf16 model on host RAM during load.
+        model_kwargs["device_map"] = {"": "cpu"}
+        model_kwargs["low_cpu_mem_usage"] = True
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         from_tf=bool(".ckpt" in args.model_name_or_path),
@@ -322,11 +423,36 @@ def main():
     )
     model.config.end_token_id = tokenizer.eos_token_id
     model.config.pad_token_id = model.config.eos_token_id
-    model.resize_token_embeddings(int(8 * math.ceil(len(tokenizer) / 8.0)))
-    model = model.to(accelerator.device)
+    target_vocab = int(8 * math.ceil(len(tokenizer) / 8.0))
+    if target_vocab != model.config.vocab_size:
+        # mean_resizing=False: new rows are zero-initialised instead of drawn
+        # from a fitted multivariate normal. The fitted-normal path is
+        # exorbitantly slow on 70B with low_cpu_mem_usage (it materialises
+        # the whole 128k×8k embed at once). Since we only ever add a single
+        # PAD row that won't appear in math labels, the init choice is
+        # functionally irrelevant.
+        model.resize_token_embeddings(target_vocab, mean_resizing=False)
+    if args.load_strategy == "direct":
+        model = model.to(accelerator.device)
+    # For layer_stream we leave the model on CPU until the streaming converter
+    # below pulls each target Linear's weight to GPU one at a time. The
+    # post-BTT remainder (embeds, layernorms, lm_head) is moved at the end.
 
     # --- Dataset ---
     # Hoisted above decomposition so calibration can reuse train_dataset/collator.
+    if args.prompt_style == "pissa":
+        # Monkey-patch BASE_PROMPT in data_utils to match PiSSA's training prompt
+        # (no literal '<s>', no trailing whitespace, and trailing newline only between
+        # 'Response:' and the target output). Used to align qfura training prompt
+        # with the published QPiSSA recipe on MetaMathQA so eval-time prompts (which
+        # already use this format) match the train distribution.
+        import utils.data_utils as _data_utils
+        _data_utils.BASE_PROMPT = (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{instruction}\n\n### Response:"
+        )
+        print_rank_0("[prompt_style=pissa] using PiSSA-style prompt for training", args.global_rank)
     if len(args.data_path) == 1 and ".json" in args.data_path[0]:
         train_dataset = SupervisedDataset(
             data_path=args.data_path[0],
@@ -383,45 +509,99 @@ def main():
             default_mode="output_one_block",
         )
 
-        converted_modules = convert_linear_to_btt(
-            model,
-            btt_rank=blocktt_rank,
-            decomp_mode=module_decomp_modes if module_decomp_modes is not None else decomp_mode,
-            init_mode="default",
-            include_names=target_modules,
-            skip_names=("lm_head",),
-            lr_act=False,
-            s_merged_to=args.s_merged_to,
-            train_position=args.train_position,
-            factorize_by_head=args.blocktt_factorize_by_head,
-            model_config=model.config,
-        )
-        stats = configure_blocktt_trainability(
-            model,
-            train_bias=train_bias,
-            train_position=args.train_position,
-            train_singular_values=(args.s_merged_to == "keep_trainable"),
-        )
-        if stats["num_btt_layers"] == 0:
-            raise ValueError("No layers were converted to BTT; check --trainable_type.")
+        if args.load_strategy == "layer_stream":
+            # Fused BTT + NF4 quantisation, one Linear at a time, with a
+            # transient CUDA round-trip per layer. This is the path required
+            # for ≥30B models on a single 94 GB H100.
+            from btt_layer import convert_and_quantize_linear_to_qbtt_streaming
+            qstream_stats = convert_and_quantize_linear_to_qbtt_streaming(
+                model,
+                btt_rank=blocktt_rank,
+                decomp_mode=module_decomp_modes if module_decomp_modes is not None else decomp_mode,
+                train_position=args.train_position,
+                s_merged_to=args.s_merged_to,
+                quant_layout=args.quant_block_layout,
+                target_modules=target_modules,
+                cuda_device=accelerator.device,
+                skip_names=("lm_head",),
+                factorize_by_head=args.blocktt_factorize_by_head,
+                convert_mode="svd",
+                init_mode="default",
+            )
+            print(
+                f"[qfura streaming] converted+quantised {qstream_stats['num_converted']} "
+                f"modules; bytes_saved={qstream_stats['bytes_saved']:,}"
+            )
+            # The streaming converter only sets trainability on the BTT cores
+            # it created. Freeze every non-BTT param explicitly here (embeds,
+            # layernorms, lm_head). Cannot use configure_blocktt_trainability
+            # because that function reads btt_l/btt_r on every BTTLayer, but
+            # those attrs have already been replaced with NF4 blobs.
+            from btt_layer import QBTTLayer
+            qbtt_param_ids = set()
+            for _, mod in model.named_modules():
+                if isinstance(mod, QBTTLayer):
+                    for p in mod.parameters(recurse=False):
+                        qbtt_param_ids.add(id(p))
+            for n, p in model.named_parameters():
+                if id(p) not in qbtt_param_ids:
+                    p.requires_grad = False
+            n_btt = sum(1 for _, m in model.named_modules() if isinstance(m, QBTTLayer))
+            n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            n_total = sum(p.numel() for p in model.parameters())
+            print(f"Converted modules: {qstream_stats['num_converted']} (BTT layers={n_btt})")
+            print(
+                f"Trainable params: {n_train:,} / {n_total:,} "
+                f"({100 * n_train / n_total:.4f}%)"
+            )
+            # Move the residual (embeds, layernorms, lm_head) to GPU now.
+            print("[qfura streaming] moving non-BTT residual modules to GPU...")
+            model = model.to(accelerator.device)
+            qstats = {
+                "num_converted": qstream_stats["num_converted"],
+                "bytes_saved": qstream_stats["bytes_saved"],
+                "layout": args.quant_block_layout,
+            }
+        else:
+            converted_modules = convert_linear_to_btt(
+                model,
+                btt_rank=blocktt_rank,
+                decomp_mode=module_decomp_modes if module_decomp_modes is not None else decomp_mode,
+                init_mode="default",
+                include_names=target_modules,
+                skip_names=("lm_head",),
+                lr_act=False,
+                s_merged_to=args.s_merged_to,
+                train_position=args.train_position,
+                factorize_by_head=args.blocktt_factorize_by_head,
+                model_config=model.config,
+            )
+            stats = configure_blocktt_trainability(
+                model,
+                train_bias=train_bias,
+                train_position=args.train_position,
+                train_singular_values=(args.s_merged_to == "keep_trainable"),
+            )
+            if stats["num_btt_layers"] == 0:
+                raise ValueError("No layers were converted to BTT; check --trainable_type.")
 
-        print(f"Converted modules: {len(converted_modules)}")
-        print(
-            f"Trainable params: {stats['trainable_param_count']:,} / "
-            f"{stats['total_param_count']:,} "
-            f"({100 * stats['trainable_param_count'] / stats['total_param_count']:.4f}%)"
-        )
-        print(
-            f"Tuned cores: left={stats['tuned_left_cores']}, "
-            f"right={stats['tuned_right_cores']}, biases={stats['tuned_biases']}"
-        )
+            print(f"Converted modules: {len(converted_modules)}")
+            print(
+                f"Trainable params: {stats['trainable_param_count']:,} / "
+                f"{stats['total_param_count']:,} "
+                f"({100 * stats['trainable_param_count'] / stats['total_param_count']:.4f}%)"
+            )
+            print(
+                f"Tuned cores: left={stats['tuned_left_cores']}, "
+                f"right={stats['tuned_right_cores']}, biases={stats['tuned_biases']}"
+            )
 
-        # --- QFura: quantize frozen BTT cores to NF4 ---
-        qstats = convert_btt_to_qbtt_(model, layout=args.quant_block_layout)
-        print(
-            f"[qfura] NF4 conversion: num_converted={qstats['num_converted']}, "
-            f"bytes_saved={qstats['bytes_saved']:,}, layout={qstats['layout']!r}"
-        )
+            # --- QFura: quantize frozen BTT cores to NF4 ---
+            qstats = convert_btt_to_qbtt_(model, layout=args.quant_block_layout)
+            print(
+                f"[qfura] NF4 conversion: num_converted={qstats['num_converted']}, "
+                f"bytes_saved={qstats['bytes_saved']:,}, layout={qstats['layout']!r}"
+            )
         if use_wandb:
             accelerator.log(
                 {
@@ -432,22 +612,56 @@ def main():
                 step=0,
             )
 
+    # --- Optionally upcast trainable params to fp32 (matches QPiSSA paper) ---
+    # Walks every QBTTLayer / BTTLayer and replaces trainable parameters with
+    # fp32 copies. The frozen NF4 large core (Params4bit) is untouched. This
+    # path is for paper-faithful experiments; default qfura keeps bf16.
+    if args.trainable_param_dtype == "fp32":
+        from btt_layer import BTTLayer
+        n_upcast = 0
+        for _, mod in model.named_modules():
+            if not isinstance(mod, BTTLayer):
+                continue
+            for attr in ("btt_l", "btt_r", "btt_s", "bias"):
+                p = getattr(mod, attr, None)
+                if p is None or not isinstance(p, torch.nn.Parameter) or not p.requires_grad:
+                    continue
+                if p.dtype == torch.float32:
+                    continue
+                fp32_param = torch.nn.Parameter(p.data.to(torch.float32), requires_grad=True)
+                setattr(mod, attr, fp32_param)
+                n_upcast += 1
+        print_rank_0(f"[trainable_param_dtype=fp32] upcast {n_upcast} BTT params to fp32",
+                     args.global_rank)
+
     for name, param in model.named_parameters():
         if param.requires_grad:
-            print(f"param {name} is trainable")
+            print(f"param {name} is trainable (dtype={param.dtype})")
 
     if args.gradient_checkpointing:
         model = make_model_gradient_checkpointing_compatible(model)
         model.gradient_checkpointing_enable()
 
-    # --- Optimizer: PagedAdamW8bit on trainable TT cores ---
+    # --- Optimizer ---
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = bnb.optim.PagedAdamW8bit(
-        trainable_params,
-        lr=args.learning_rate,
-        betas=(0.9, 0.95),
-        weight_decay=args.weight_decay,
-    )
+    if args.optimizer == "paged_adamw_8bit":
+        optimizer = bnb.optim.PagedAdamW8bit(
+            trainable_params,
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=args.weight_decay,
+        )
+    elif args.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(
+            trainable_params,
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=args.weight_decay,
+        )
+    else:
+        raise ValueError(f"unknown --optimizer: {args.optimizer}")
+    print_rank_0(f"[optimizer={args.optimizer}] {len(trainable_params)} trainable tensors",
+                 args.global_rank)
 
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
@@ -629,6 +843,16 @@ def main():
     #                        (saved only if val_set_size > 0)
     # When --load_last_model is set, best-tracking is skipped during training
     # to save memory; only last/ is written.
+    # When the model was loaded layer-streaming (>=30B), the materialised bf16
+    # checkpoint cannot fit in GPU memory, so we offload each materialised
+    # nn.Linear to CPU as it is built. save_hf_format then walks the CPU model
+    # and writes safetensors shards from there. CPU has 1.5 TB on this box, so
+    # this is fine; for the direct path on smaller models we keep everything on
+    # GPU as before to avoid the host roundtrip.
+    save_offload_device = (
+        torch.device("cpu") if args.load_strategy == "layer_stream" else None
+    )
+
     def _save_one(src_model, sub_folder):
         # Use save_hf_format(args, sub_folder=...) which writes to
         # <args.output_dir>/<sub_folder>. Mutates src_model in place via
@@ -638,7 +862,7 @@ def main():
             os.makedirs(target_dir, exist_ok=True)
             save_calibrated_btt_checkpoint(src_model, target_dir, tokenizer)
         else:
-            materialize_btt_to_linear(src_model)
+            materialize_btt_to_linear(src_model, offload_device=save_offload_device)
             save_hf_format(src_model, tokenizer, args, sub_folder=sub_folder)
 
     if args.output_dir is not None and accelerator.is_main_process:

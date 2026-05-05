@@ -38,7 +38,7 @@ wandb_run_id="${wandb_run_id:-$(python -c 'import wandb; print(wandb.util.genera
 export WANDB_RUN_ID="${wandb_run_id}"
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 
-OUTPUT=${OUTPUT_SRC_DIR}/math/${MODEL}/${adapter_name}-lr_${lr}-rank_${lora_r}-alpha_${lora_alpha}-seed_${seed}
+OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/math/${MODEL}/${adapter_name}-lr_${lr}-rank_${lora_r}-alpha_${lora_alpha}-seed_${seed}}"
 mkdir -p $OUTPUT
 
 cd $SRC_DIR
@@ -49,7 +49,7 @@ accelerate launch \
     --mixed_precision="bf16" \
     src/finetune_lora.py \
     --model_name_or_path ${MODEL} \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size ${PER_DEVICE_TRAIN_BS:-1} \
     --per_device_eval_batch_size 16 \
     --logging_steps 10 \
     --max_seq_len 2048 \
@@ -57,7 +57,7 @@ accelerate launch \
     --weight_decay 0. \
     --num_train_epochs 3 \
     --mixed_precision bf16 \
-    --gradient_accumulation_steps 16 \
+    --gradient_accumulation_steps ${GRAD_ACC_STEPS:-16} \
     --lr_scheduler_type linear \
     --num_warmup_steps 0.03 \
     --seed ${seed} \

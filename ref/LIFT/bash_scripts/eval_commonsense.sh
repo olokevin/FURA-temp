@@ -71,7 +71,13 @@ SRC_DIR="${SRC_DIR:-${PROJECT_DIR}/ref/LIFT}"
 DATA_DIR="${DATA_DIR:-/data/ruijiezhang/llm-adapter_bp/LLM-Adapters/dataset}"
 
 # datasets=(boolq)
-datasets=(boolq piqa social_i_qa ARC-Challenge ARC-Easy openbookqa hellaswag winogrande)
+# Allow caller to override the dataset list via env var EVAL_DATASETS
+# (space-separated). Default = full 8-task suite.
+if [ -n "${EVAL_DATASETS:-}" ]; then
+    read -r -a datasets <<< "$EVAL_DATASETS"
+else
+    datasets=(boolq piqa social_i_qa ARC-Challenge ARC-Easy openbookqa hellaswag winogrande)
+fi
 
 cd $SRC_DIR
 

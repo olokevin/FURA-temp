@@ -71,7 +71,13 @@ SRC_DIR="${SRC_DIR:-${PROJECT_DIR}/ref/LIFT}"
 DATA_DIR="${DATA_DIR:-/data/ruijiezhang/llm-adapter_bp/LLM-Adapters/dataset}"
 
 # datasets=(gsm8k)
-datasets=(MultiArith gsm8k AddSub AQuA SingleEq SVAMP mawps)
+# Allow caller to override the dataset list via env var EVAL_DATASETS
+# (space-separated). Default = full 7-task math suite.
+if [ -n "${EVAL_DATASETS:-}" ]; then
+    read -r -a datasets <<< "$EVAL_DATASETS"
+else
+    datasets=(MultiArith gsm8k AddSub AQuA SingleEq SVAMP mawps)
+fi
 
 cd $SRC_DIR
 
@@ -96,6 +102,15 @@ for dataset in "${datasets[@]}"; do
         --dataset "$dataset"
         --output_dir "$OUTPUT"
     )
+    if [ -n "$wandb_project" ]; then
+        cmd+=(--wandb_project "$wandb_project")
+    fi
+    if [ -n "$wandb_run_name" ]; then
+        cmd+=(--wandb_run_name "$wandb_run_name")
+    fi
+    if [ -n "$wandb_run_id" ]; then
+        cmd+=(--wandb_run_id "$wandb_run_id")
+    fi
 
     "${cmd[@]}" 2> >(tee "$OUTPUT/eval_err.log" >&2) | tee "$OUTPUT/eval.log"
 done

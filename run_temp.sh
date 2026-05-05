@@ -8,6 +8,8 @@
 # DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=trainable bash run_rl.sh
 # DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=input_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable bash run_rl.sh
 
+# DEVICE=3 LR=1e-5 TRAIN_MODE=blocktt DECOMP_MODE=output_one_block TRAIN_POSITION=both S_MERGED_TO=split bash run_rl.sh
+
 ### 7B rl
 # DEVICE=4 LR=1e-4 TRAIN_MODE=blocktt DECOMP_MODE=output_one_block TRAIN_POSITION=small S_MERGED_TO=keep_trainable bash run_rl_7B.sh
 

@@ -36,10 +36,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from analysis.plot_motivation_figure import (  # noqa: E402
-    COLOR_FULL,
-    COLOR_SVD,
-    COLOR_FURA,
-    COLOR_LORA,
     COLOR_Q,
     COLOR_UP,
     compute_effective_rank,
@@ -52,6 +48,12 @@ from analysis.plot_motivation_figure import (  # noqa: E402
     resolve_base_model,
     _module_prefix,
 )
+
+# Local color overrides (red for Full FT, grey for LoRA, blue for SVD / FuRA).
+COLOR_FULL = "#D62728"  # red
+COLOR_LORA = "#9E9E9E"  # grey
+COLOR_SVD  = "#1F77B4"  # blue (also used for SVD-FT bars)
+COLOR_FURA = "#1F77B4"  # blue (FuRA shares the blue family)
 
 
 # ---------------------------------------------------------------------------
@@ -90,18 +92,18 @@ CONFIG = {
     "bars": {
         # Target = Math-10K avg accuracy (in-domain).
         # Source = Commonsense avg accuracy (out-of-domain, source-domain forgetting).
-        # Values per user-supplied table (2026-05-03).
+        # Values per user-supplied table (2026-05-03, updated).
         "math": {
-            "Pretrained": None,
-            "Full FT": 79.8,
-            "SVD FT": 80.3,
-            "LoRA": 79.44,
-            "FuRA": 80.5,
+            "Pretrained": 41.3,        # shared pretrain baseline (target side)
+            "Full FT": 71.2,
+            "SVD FT": 72.0,
+            "LoRA": 69.8,
+            "FuRA": 71.9,
         },
         "commonsense": {
-            "Pretrained": 37.55,       # base model commonsense Avg from lift_math.md
+            "Pretrained": 41.3,        # shared pretrain baseline (source side)
             "Full FT": 40.6,
-            "SVD FT": 44.2,
+            "SVD FT": 47.70,
             "LoRA": 35.6,
             "FuRA": 45.5,
         },
@@ -109,6 +111,9 @@ CONFIG = {
     # Outputs (two separate figures).
     "output_svdft": "docs/exp_results/figs/motivating_svdft.png",
     "output_fura":  "docs/exp_results/figs/motivating_fura.png",
+    # Cache directory for precomputed panel (d) and panel (e) data.
+    # Caches are versioned by their inputs (ckpt path + module list / layer).
+    "cache_dir": "analysis_results/motivating_v8_cache",
     "device": "cuda:0",
 }
 
@@ -117,12 +122,13 @@ CONFIG = {
 # Plot styling (mirrors plot_motivation_figure.py)
 # ---------------------------------------------------------------------------
 
-FONT_BASE = 11
-FONT_LABEL = 12
-FONT_TITLE = 13
-FONT_TICK = 10
-FONT_LEGEND = 10
-FONT_PANEL_LABEL = 14
+FONT_BASE = 13
+FONT_LABEL = 15
+FONT_TITLE = 20
+FONT_TICK = 12
+FONT_LEGEND = 16
+FONT_PANEL_LABEL = 17
+FONT_BAR_NUMBER = 16   # numeric labels above bars in panel (c) of each figure
 
 plt.rcParams.update({
     "font.family": "serif",
@@ -151,6 +157,79 @@ def _panel_label_fig(fig, x_fig: float, y_fig: float, label: str):
              ha="left", va="top")
 
 
+def _ckpt_tag(ckpt_path: str) -> str:
+    """Stable, filesystem-safe tag for a checkpoint dir.
+
+    If the leaf is a generic name like ``last`` / ``best`` / ``checkpoint`` /
+    ``step=...``, climb one parent so the tag identifies the run, not the
+    sub-checkpoint.
+    """
+    p = Path(ckpt_path)
+    leaf = p.name
+    parent = p.parent.name
+    generic = {"last", "best", "checkpoint"}
+    if leaf in generic or leaf.startswith("step=") or leaf.startswith("checkpoint-"):
+        return f"{parent}__{leaf}".replace("/", "_")
+    return leaf.replace("/", "_")
+
+
+def _panel_d_cache_path(cache_dir: Path, ckpts: dict, modules: list[str]) -> Path:
+    """Cache key for panel (d) is (full_ft, fura, lora ckpts) × modules list."""
+    parts = [_ckpt_tag(ckpts[k]) for k in ("full_ft", "fura", "lora")]
+    mod_tag = "_".join(modules)
+    fname = "panel_d__" + "__".join(parts) + f"__{mod_tag}.npz"
+    return cache_dir / fname
+
+
+def _panel_e_cache_path(cache_dir: Path, fura_ckpt: str, layer: int,
+                        module: str, decomp_mode: str) -> Path:
+    """Cache key for panel (e) is the FuRA ckpt + (layer, module, decomp)."""
+    fname = (f"panel_e__{_ckpt_tag(fura_ckpt)}__L{layer}__{module}"
+             f"__{decomp_mode}.npz")
+    return cache_dir / fname
+
+
+def _save_panel_d_cache(path: Path, ranks_per_method: dict[str, dict[str, np.ndarray]]):
+    """Save {method: {module: array}} as a flat npz."""
+    flat = {}
+    for method, per_mod in ranks_per_method.items():
+        for mod, arr in per_mod.items():
+            flat[f"{method}__{mod}"] = arr
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(str(path), **flat)
+    print(f"[cache] saved panel-d → {path}")
+
+
+def _load_panel_d_cache(path: Path) -> dict[str, dict[str, np.ndarray]]:
+    z = np.load(str(path))
+    out: dict[str, dict[str, np.ndarray]] = {}
+    for key in z.files:
+        method, mod = key.split("__", 1)
+        out.setdefault(method, {})[mod] = z[key]
+    print(f"[cache] loaded panel-d ← {path}")
+    return out
+
+
+def _save_panel_e_cache(path: Path, r_info: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(str(path),
+                        delta=r_info["delta"],
+                        n=np.int64(r_info["n"]),
+                        b=np.int64(r_info["b"]),
+                        m=np.int64(r_info["m"]),
+                        rank=np.int64(r_info["rank"]))
+    print(f"[cache] saved panel-e → {path}")
+
+
+def _load_panel_e_cache(path: Path) -> dict:
+    z = np.load(str(path))
+    out = {"delta": z["delta"],
+           "n": int(z["n"]), "b": int(z["b"]),
+           "m": int(z["m"]), "rank": int(z["rank"])}
+    print(f"[cache] loaded panel-e ← {path}")
+    return out
+
+
 def _render_panel_titles(fig, gs, titles: list[str], y_fig: float):
     """Place three panel titles centered above each gridspec cell at the same y.
 
@@ -170,7 +249,7 @@ def _render_panel_titles(fig, gs, titles: list[str], y_fig: float):
 # ---------------------------------------------------------------------------
 
 def plot_panel_a(ax, csv_path: str, rect_out: int, rect_in: int,
-                 panel_prefix: str = ""):
+                 panel_prefix: str = "", show_annotations: bool = True):
     df = pd.read_csv(csv_path)
     steps = df["step"].values
     g = df["L15.up_proj.G.u_proj"].values
@@ -181,31 +260,38 @@ def plot_panel_a(ax, csv_path: str, rect_out: int, rect_in: int,
     color_w = "#2171B5"
 
     # Single y-axis with both curves and the random baseline.
-    ax.plot(steps, w, color=color_w, linewidth=1.6,
-            label="Current weight W'")
-    ax.plot(steps, g, color=color_g, linewidth=1.6, alpha=0.9,
+    ax.plot(steps, w, color=color_w, linewidth=3,
+            label="Weight W'")
+    ax.plot(steps, g, color=color_g, linewidth=3, alpha=0.9,
             label="Gradient G")
-    ax.axhline(baseline, color="gray", linestyle="--", linewidth=1.2,
-               label=f"Random baseline = {baseline:.3f}")
+    ax.axhline(baseline, color="gray", linestyle="--", linewidth=2.5)
 
-    # Annotate W's final value so it doesn't read as "1.0".
-    w_final = float(w[-1])
-    ax.annotate(
-        f"W' final = {w_final:.4f}",
-        xy=(steps[-1], w_final),
-        xytext=(steps[-1] * 0.55, w_final - 0.18),
-        fontsize=FONT_BASE - 1,
-        color=color_w,
-        arrowprops=dict(arrowstyle="-", color=color_w, lw=0.8),
-    )
+    if show_annotations:
+        # Inline annotation for the random baseline (placed UNDER the dashed line).
+        ax.text(
+            steps[-1] * 0.02, baseline - 0.03,
+            f"Random baseline = {baseline:.3f}",
+            fontsize=FONT_LABEL + 5, color="black", va="top",
+        )
 
-    ax.set_xlabel("Training step")
+        # Annotate W's final value so it doesn't read as "1.0".
+        w_final = float(w[-1])
+        ax.annotate(
+            f"W' final = {w_final:.4f}",
+            xy=(steps[-1], w_final),
+            xytext=(steps[-1] * 0.40, w_final - 0.22),
+            fontsize=FONT_LABEL + 5,
+            color="black",
+            arrowprops=dict(arrowstyle="-", color="black", lw=0.8),
+        )
+
+    ax.set_xlabel("Training step", fontsize=FONT_LABEL + 4)
+    # No y-label per user spec.
     ax.set_ylim(0.0, 1.10)
-    # Legend above the plot. Panel title is placed by orchestrator.
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.02),
-              ncol=3, framealpha=0.9, edgecolor="gray",
-              fontsize=FONT_LEGEND - 1, handlelength=1.5,
-              columnspacing=0.8, borderpad=0.3)
+    # Legend in-plot at the lower right.
+    ax.legend(loc="lower right", framealpha=0.9, edgecolor="gray",
+              fontsize=FONT_LEGEND, handlelength=1.6,
+              borderpad=0.4)
     ax.grid(True, alpha=0.2, linewidth=0.4)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -228,7 +314,7 @@ def compute_S_U_overlap(W0: torch.Tensor, Wp: torch.Tensor):
 
 def plot_panel_b(ax_top, ax_bot, base_index, full_weights, full_fmt,
                  layer: int, module: str, device: torch.device,
-                 panel_prefix: str = ""):
+                 panel_prefix: str = "", show_subtitle: bool = True):
     key = f"{_module_prefix(layer, module)}.weight"
     W0 = load_tensor_sf(base_index, key)
     Wp = get_weight(full_weights, key, full_fmt)
@@ -246,6 +332,7 @@ def plot_panel_b(ax_top, ax_bot, base_index, full_weights, full_fmt,
     ax_top.scatter(idx, sdiff, s=4, color=COLOR_FULL, alpha=0.6,
                    edgecolors="none")
     ax_top.axhline(0, color="gray", linewidth=0.4, linestyle=":")
+    # No y-label on (b)-upper per user spec.
     # No axes-title here — panel title placed by orchestrator at a uniform y.
     ax_top.grid(True, alpha=0.2, linewidth=0.4)
     ax_top.spines["top"].set_visible(False)
@@ -257,14 +344,12 @@ def plot_panel_b(ax_top, ax_bot, base_index, full_weights, full_fmt,
                    edgecolors="none")
     ax_bot.axhline(1.0, color="gray", linewidth=0.4, linestyle=":")
     ax_bot.set_ylim(-0.05, 1.10)
-    # Title with extra top padding so it doesn't collide with the upper subplot.
-    ax_bot.set_title("singular vector rotation |⟨U_i′, U_i⁰⟩|", pad=8)
-    ax_bot.set_xlabel("singular index i")
-    ax_bot.grid(True, alpha=0.2, linewidth=0.4)
-    ax_bot.spines["top"].set_visible(False)
-    ax_bot.spines["right"].set_visible(False)
-    ax_bot.set_xlabel("Singular index i")
-    ax_bot.set_ylabel("|⟨U₀[:,i], U[:,i]⟩|")
+    # Sub-title with extra top padding so it doesn't collide with the upper subplot.
+    if show_subtitle:
+        ax_bot.set_title("Singular vector rotation |⟨U_i′, U_i⁰⟩|",
+                         fontsize=FONT_TITLE - 2, pad=8)
+    ax_bot.set_xlabel("Singular index i", fontsize=FONT_LABEL + 4)
+    # No y-label on the lower scatter (panel-(b) lower).
     ax_bot.grid(True, alpha=0.2, linewidth=0.4)
     ax_bot.spines["top"].set_visible(False)
     ax_bot.spines["right"].set_visible(False)
@@ -292,11 +377,18 @@ def plot_grouped_bars(ax, methods: list[str], math_vals: dict[str, float | None]
     bar_width = group_width / n
     offsets = (np.arange(n) - (n - 1) / 2) * bar_width
 
+    # Identify the best (max) value per group so we can bold only the winner.
+    target_vals = {m: math_vals.get(m) for m in methods if math_vals.get(m) is not None}
+    source_vals = {m: cs_vals.get(m) for m in methods if cs_vals.get(m) is not None}
+    best_target = max(target_vals, key=target_vals.get) if target_vals else None
+    best_source = max(source_vals, key=source_vals.get) if source_vals else None
+
     for j, m in enumerate(methods):
         x_positions = group_centers + offsets[j]
         vals = [math_vals.get(m), cs_vals.get(m)]
+        is_best = [m == best_target, m == best_source]
         # Drop missing bars but keep the slot — show as light hatched bar.
-        for x, v in zip(x_positions, vals):
+        for x, v, best in zip(x_positions, vals, is_best):
             if v is None:
                 ax.bar(x, 0.5, width=bar_width, color="#EEEEEE",
                        edgecolor="#999999", linewidth=0.5, hatch="///")
@@ -306,29 +398,25 @@ def plot_grouped_bars(ax, methods: list[str], math_vals: dict[str, float | None]
                 ax.bar(x, v, width=bar_width, color=color_map.get(m, "#888"),
                        edgecolor="white", linewidth=0.5, label=m if x == x_positions[0] else None)
                 ax.text(x, v + 0.8, f"{v:.1f}", ha="center", va="bottom",
-                        fontsize=FONT_BASE, fontweight="bold")
+                        fontsize=FONT_BAR_NUMBER,
+                        fontweight=("bold" if best else "normal"))
 
-    # Pretrained dashed lines: span only their group.
-    if pretrained_math is not None:
-        ax.hlines(pretrained_math,
-                  group_centers[0] - group_width / 2,
-                  group_centers[0] + group_width / 2,
-                  colors="black", linestyles="--", linewidth=1.0)
-        ax.text(group_centers[0] + group_width / 2, pretrained_math,
-                f" pretr. {pretrained_math:.1f}", ha="left", va="center",
-                fontsize=FONT_BASE - 1, color="black")
+    # Pretrained baseline as a dashed line over the Source group only.
+    # (No dashed line on the Target side.)
+    pretrain_handle = None
     if pretrained_cs is not None:
-        ax.hlines(pretrained_cs,
-                  group_centers[1] - group_width / 2,
-                  group_centers[1] + group_width / 2,
-                  colors="black", linestyles="--", linewidth=1.0)
-        ax.text(group_centers[1] + group_width / 2, pretrained_cs,
-                f" pretr. {pretrained_cs:.1f}", ha="left", va="center",
-                fontsize=FONT_BASE - 1, color="black")
+        line, = ax.plot(
+            [group_centers[1] - group_width / 2,
+             group_centers[1] + group_width / 2],
+            [pretrained_cs, pretrained_cs],
+            color="black", linestyle="--", linewidth=2.5,
+            label="Pretrain",
+        )
+        pretrain_handle = line
 
     ax.set_xticks(group_centers)
-    ax.set_xticklabels(["Target", "Source"])
-    ax.set_ylabel("Avg accuracy (%)")
+    ax.set_xticklabels(["Target", "Source"], fontsize=FONT_LABEL + 4)
+    ax.set_ylabel("Accuracy (%)", fontsize=FONT_LABEL + 4)
     # Panel title placed by orchestrator at uniform y.
     # y-axis up to a reasonable max
     all_vals = [v for v in list(math_vals.values()) + list(cs_vals.values())
@@ -342,10 +430,14 @@ def plot_grouped_bars(ax, methods: list[str], math_vals: dict[str, float | None]
     ax.grid(True, axis="y", alpha=0.2, linewidth=0.4)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    # Custom legend (one entry per method)
+    # Custom legend (one entry per method, plus Pretrain baseline if present)
     handles = [plt.Rectangle((0, 0), 1, 1, color=color_map.get(m, "#888"))
                for m in methods]
-    ax.legend(handles, methods, loc="upper right", framealpha=0.9,
+    labels = list(methods)
+    if pretrain_handle is not None:
+        handles.append(pretrain_handle)
+        labels.append("Pretrain")
+    ax.legend(handles, labels, loc="upper right", framealpha=0.9,
               edgecolor="gray", fontsize=FONT_LEGEND, ncol=1)
 
 
@@ -395,15 +487,14 @@ def plot_panel_d(ax, ranks_per_method: dict[str, dict[str, np.ndarray]],
                     linestyle=method_styles.get(method, "-"),
                     marker=module_markers.get(mod, "."),
                     markersize=4,
-                    linewidth=1.4,
+                    linewidth=2.5,
                     label=method)
 
-    ax.set_xlabel("Layer index")
-    # Legend above the plot. Panel title placed by orchestrator at uniform y.
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.02),
-              ncol=3, framealpha=0.9, edgecolor="gray",
-              fontsize=FONT_LEGEND - 1, handlelength=1.8,
-              columnspacing=0.8, borderpad=0.3)
+    ax.set_xlabel("Layer index", fontsize=FONT_LABEL + 4)
+    # ax.set_ylabel("Effective rank of ΔW")
+    # In-plot legend at lower right.
+    ax.legend(loc="lower right", framealpha=0.9, edgecolor="gray",
+              fontsize=FONT_LEGEND, handlelength=1.8, borderpad=0.4)
     ax.grid(True, alpha=0.2, linewidth=0.4)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -437,20 +528,20 @@ def plot_panel_e_2x2(fig, gs_cell, r_info: dict, layer: int, module: str,
     vmin = min(arr.min() for arr in log_slices)
     vmax = max(arr.max() for arr in log_slices)
 
-    # 2x2 sub-grid inside gs_cell, plus a thin colorbar column on the right.
+    # 2x2 sub-grid inside gs_cell, with a thin colorbar column on the LEFT.
     inner = gridspec.GridSpecFromSubplotSpec(
         2, 3, subplot_spec=gs_cell,
-        width_ratios=[1.0, 1.0, 0.06],
+        width_ratios=[0.06, 1.0, 1.0],
         height_ratios=[1.0, 1.0],
-        hspace=0.30, wspace=0.18,
+        hspace=0.30, wspace=0.40,
     )
+    cax = fig.add_subplot(inner[:, 0])
     axes_2x2 = [
-        fig.add_subplot(inner[0, 0]),
         fig.add_subplot(inner[0, 1]),
-        fig.add_subplot(inner[1, 0]),
+        fig.add_subplot(inner[0, 2]),
         fig.add_subplot(inner[1, 1]),
+        fig.add_subplot(inner[1, 2]),
     ]
-    cax = fig.add_subplot(inner[:, 2])
 
     im = None
     for ax_i, sidx, arr in zip(axes_2x2, slice_idx, log_slices):
@@ -467,9 +558,12 @@ def plot_panel_e_2x2(fig, gs_cell, r_info: dict, layer: int, module: str,
         ax_i.set_yticklabels([str(t) for t in yticks])
         ax_i.tick_params(axis="both", labelsize=FONT_TICK - 1, length=2.5)
 
-    fig.colorbar(im, cax=cax, label="log₁₀|R'−R₀|")
-    cax.tick_params(labelsize=FONT_TICK - 1)
-    cax.yaxis.label.set_size(FONT_LABEL - 1)
+    cbar = fig.colorbar(im, cax=cax, label="log₁₀|R'−R₀|")
+    # Move ticks and the label to the LEFT side of the colorbar.
+    cax.yaxis.set_ticks_position("left")
+    cax.yaxis.set_label_position("left")
+    cax.tick_params(labelsize=FONT_TICK)
+    cax.yaxis.label.set_size(FONT_LABEL + 4)
     # Panel title handled by orchestrator; per-block titles already drawn.
     return axes_2x2[0]
 
@@ -490,6 +584,14 @@ def main():
                         help="Skip panel (d) effective-rank computation.")
     parser.add_argument("--skip-e", action="store_true",
                         help="Skip panel (e) BlockTT R-update computation.")
+    parser.add_argument("--cache-dir", default=CONFIG["cache_dir"],
+                        help="Directory to read/write panel (d)/(e) caches.")
+    parser.add_argument("--recompute", action="store_true",
+                        help="Ignore cached panel (d)/(e) data and recompute.")
+    parser.add_argument("--no-titles", action="store_true",
+                        help=("Suppress all subplot titles AND the W' final "
+                              "/ random-baseline annotations on panel (a). "
+                              "The figure name gets a `_notitles` suffix."))
     args = parser.parse_args()
 
     device = torch.device(CONFIG["device"])
@@ -501,48 +603,72 @@ def main():
     num_layers = detect_num_layers(base_index)
     print(f"Base: {CONFIG['base_model']} ({num_layers} layers)")
 
-    print("Loading full FT ckpt...")
-    full_w, full_fmt = load_checkpoint(CONFIG["ckpts"]["full_ft"])
-    print("Loading FuRA ckpt...")
-    fura_w, fura_fmt = load_checkpoint(CONFIG["ckpts"]["fura"])
-    print("Loading LoRA ckpt...")
-    lora_w, lora_fmt = load_checkpoint(CONFIG["ckpts"]["lora"])
+    cache_dir = Path(args.cache_dir)
+
+    # ---- Lazy ckpt loaders. Panels a/b need full_w; d needs all three;
+    # e needs fura_w. We only load each one if its consumer actually runs.
+    _ckpt_cache = {}
+
+    def _get_ckpt(name: str):
+        if name not in _ckpt_cache:
+            print(f"Loading {name} ckpt...")
+            _ckpt_cache[name] = load_checkpoint(CONFIG["ckpts"][name])
+        return _ckpt_cache[name]
 
     # ---- Panel (d): rank curves (FuRA figure) ----
+    panel_d_path = _panel_d_cache_path(cache_dir, CONFIG["ckpts"],
+                                       CONFIG["panel_d_modules"])
+    ranks_per_method: dict[str, dict[str, np.ndarray]] = {}
     if not args.skip_fura and not args.skip_d:
-        print("Computing per-layer rank curves...")
-        ranks_per_method = {
-            "Full FT": compute_per_layer_rank(
-                base_index, full_w, full_fmt, num_layers,
-                CONFIG["panel_d_modules"], device, "full"),
-            "FuRA": compute_per_layer_rank(
-                base_index, fura_w, fura_fmt, num_layers,
-                CONFIG["panel_d_modules"], device, "fura"),
-            "LoRA": compute_per_layer_rank(
-                base_index, lora_w, lora_fmt, num_layers,
-                CONFIG["panel_d_modules"], device, "lora"),
-        }
-    else:
-        ranks_per_method = {}
+        if panel_d_path.exists() and not args.recompute:
+            ranks_per_method = _load_panel_d_cache(panel_d_path)
+        else:
+            full_w, full_fmt = _get_ckpt("full_ft")
+            fura_w, fura_fmt = _get_ckpt("fura")
+            lora_w, lora_fmt = _get_ckpt("lora")
+            print("Computing per-layer rank curves...")
+            ranks_per_method = {
+                "Full FT": compute_per_layer_rank(
+                    base_index, full_w, full_fmt, num_layers,
+                    CONFIG["panel_d_modules"], device, "full"),
+                "FuRA": compute_per_layer_rank(
+                    base_index, fura_w, fura_fmt, num_layers,
+                    CONFIG["panel_d_modules"], device, "fura"),
+                "LoRA": compute_per_layer_rank(
+                    base_index, lora_w, lora_fmt, num_layers,
+                    CONFIG["panel_d_modules"], device, "lora"),
+            }
+            _save_panel_d_cache(panel_d_path, ranks_per_method)
 
     # ---- Panel (e): FuRA R-heatmap on a single layer ----
+    panel_e_path = _panel_e_cache_path(cache_dir, CONFIG["ckpts"]["fura"],
+                                       CONFIG["panel_e_layer"],
+                                       CONFIG["panel_e_module"],
+                                       CONFIG["panel_e_decomp_mode"])
+    r_info = None
     if not args.skip_fura and not args.skip_e:
-        print(f"Computing FuRA R-heatmap on layer {CONFIG['panel_e_layer']}...")
-        # We only need ONE layer; abuse compute_R_update_heatmap by passing num_layers
-        # equal to (panel_e_layer + 1) and only consuming the last.
-        L = CONFIG["panel_e_layer"]
-        # Use a single-layer call to avoid full-model loop
-        from analysis.plot_motivation_figure import decompose_to_btt_R
-        key = f"{_module_prefix(L, CONFIG['panel_e_module'])}.weight"
-        W0 = load_tensor_sf(base_index, key).float().to(device)
-        Wp = get_weight(fura_w, key, fura_fmt).float().to(device)
-        R0, n, b, m, rank = decompose_to_btt_R(W0, CONFIG["panel_e_decomp_mode"])
-        R1, _, _, _, _ = decompose_to_btt_R(Wp, CONFIG["panel_e_decomp_mode"])
-        delta_R = (R1 - R0).abs().cpu().numpy()
-        r_info = {"delta": delta_R, "n": n, "b": b, "m": m, "rank": rank}
-        del W0, Wp, R0, R1
+        if panel_e_path.exists() and not args.recompute:
+            r_info = _load_panel_e_cache(panel_e_path)
+        else:
+            fura_w, fura_fmt = _get_ckpt("fura")
+            print(f"Computing FuRA R-heatmap on layer {CONFIG['panel_e_layer']}...")
+            from analysis.plot_motivation_figure import decompose_to_btt_R
+            L = CONFIG["panel_e_layer"]
+            key = f"{_module_prefix(L, CONFIG['panel_e_module'])}.weight"
+            W0 = load_tensor_sf(base_index, key).float().to(device)
+            Wp = get_weight(fura_w, key, fura_fmt).float().to(device)
+            R0, n, b, m, rank = decompose_to_btt_R(W0, CONFIG["panel_e_decomp_mode"])
+            R1, _, _, _, _ = decompose_to_btt_R(Wp, CONFIG["panel_e_decomp_mode"])
+            delta_R = (R1 - R0).abs().cpu().numpy()
+            r_info = {"delta": delta_R, "n": n, "b": b, "m": m, "rank": rank}
+            del W0, Wp, R0, R1
+            _save_panel_e_cache(panel_e_path, r_info)
+
+    # Panels (a) and (b) need the full-FT weights. Load lazily here.
+    if not args.skip_svdft:
+        full_w, full_fmt = _get_ckpt("full_ft")
     else:
-        r_info = None
+        full_w, full_fmt = None, None
 
     # =========================================================================
     # Figure 1 (motivating_svdft): panels a / b / c
@@ -553,7 +679,7 @@ def main():
         gs1 = gridspec.GridSpec(1, 3, figure=fig1,
                                 width_ratios=[1.1, 1.1, 1.0],
                                 wspace=0.40,
-                                top=0.78, bottom=0.13, left=0.05, right=0.97)
+                                top=0.84, bottom=0.13, left=0.05, right=0.97)
 
         ax_a = fig1.add_subplot(gs1[0, 0])
         gs_b = gridspec.GridSpecFromSubplotSpec(2, 1, subplot_spec=gs1[0, 1],
@@ -565,11 +691,13 @@ def main():
 
         plot_panel_a(ax_a, CONFIG["proj_energy_csv"],
                      CONFIG["rect_out"], CONFIG["rect_in"],
-                     panel_prefix="(a) ")
+                     panel_prefix="(a) ",
+                     show_annotations=not args.no_titles)
 
         plot_panel_b(ax_b_top, ax_b_bot, base_index, full_w, full_fmt,
                      CONFIG["panel_b_layer"], CONFIG["panel_b_module"], device,
-                     panel_prefix="(b) ")
+                     panel_prefix="(b) ",
+                     show_subtitle=not args.no_titles)
 
         methods_c = ["Full FT", "SVD FT"]
         plot_grouped_bars(
@@ -582,14 +710,17 @@ def main():
             title="",
         )
 
-        # Aligned panel titles at uniform figure-y.
-        _render_panel_titles(fig1, gs1, [
-            "(a) Fraction in col(U)",
-            "(b) singular value change S′ − S₀",
-            "(c) Full FT and SVD FT trained on MATH-10K",
-        ], y_fig=0.92)
+        # Aligned panel titles at uniform figure-y (suppressed with --no-titles).
+        if not args.no_titles:
+            _render_panel_titles(fig1, gs1, [
+                "(a) Fraction in col(U)",
+                "(b) Singular value change S' - S₀",
+                "(c) MATH-10K Training",
+            ], y_fig=0.94)
 
         out = Path(args.output_svdft)
+        if args.no_titles:
+            out = out.with_name(out.stem + "_notitles" + out.suffix)
         out.parent.mkdir(parents=True, exist_ok=True)
         fig1.savefig(str(out))
         fig1.savefig(str(out.with_suffix(".pdf" if out.suffix == ".png" else ".png")))
@@ -605,7 +736,7 @@ def main():
         gs2 = gridspec.GridSpec(1, 3, figure=fig2,
                                 width_ratios=[1.1, 1.1, 1.0],
                                 wspace=0.40,
-                                top=0.78, bottom=0.13, left=0.05, right=0.97)
+                                top=0.84, bottom=0.13, left=0.05, right=0.97)
 
         ax_d = fig2.add_subplot(gs2[0, 0])
         ax_f = fig2.add_subplot(gs2[0, 2])
@@ -640,14 +771,17 @@ def main():
             title="",
         )
 
-        # Aligned panel titles at uniform figure-y.
-        _render_panel_titles(fig2, gs2, [
+        # Aligned panel titles at uniform figure-y (suppressed with --no-titles).
+        if not args.no_titles:
+            _render_panel_titles(fig2, gs2, [
             "(a) Update effective rank",
             "(b) FuRA update pattern",
-            "(c) FuRA, LoRA, FullFT trained on MATH-10K",
-        ], y_fig=0.92)
+            "(c) MATH-10K Training",
+        ], y_fig=0.94)
 
         out = Path(args.output_fura)
+        if args.no_titles:
+            out = out.with_name(out.stem + "_notitles" + out.suffix)
         out.parent.mkdir(parents=True, exist_ok=True)
         fig2.savefig(str(out))
         fig2.savefig(str(out.with_suffix(".pdf" if out.suffix == ".png" else ".png")))

@@ -135,8 +135,21 @@ def parse_args(argv=None):
         "--optimizer",
         type=str,
         default="adamw",
-        choices=["adamw", "muon"],
-        help="Optimizer to use: adamw or muon (default: adamw)",
+        choices=["adamw", "adamw8bit", "muon"],
+        help=(
+            "Optimizer to use: adamw, adamw8bit (bitsandbytes 8-bit AdamW), or muon "
+            "(default: adamw). adamw8bit cuts optimizer memory ~4x — useful for "
+            "single-GPU full-FT of 7B+ models."
+        ),
+    )
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable HF gradient checkpointing on the model. Saves activation memory "
+            "(~5x for full-FT) at the cost of ~30%% slower training. Default: disabled."
+        ),
     )
     parser.add_argument(
         "--lr-scheduler",
@@ -1385,6 +1398,13 @@ def build_optimizer(args, trainable_params, trainable_named_params):
             lr=args.lr,
             weight_decay=args.weight_decay,
         )
+    if args.optimizer == "adamw8bit":
+        from bitsandbytes.optim import AdamW8bit
+        return AdamW8bit(
+            trainable_params,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
     if args.optimizer == "muon":
         return Muon(
             trainable_named_params,
@@ -1580,6 +1600,7 @@ def main(argv=None):
     print(f"  Train mode: {args.train_mode}")
     print(f"  Model ID: {args.model_id}")
     print(f"  Optimizer: {args.optimizer}")
+    print(f"  Gradient checkpointing: {args.gradient_checkpointing}")
     print(f"  Learning rate: {args.lr}")
     print(f"  vLLM max model len: {args.max_model_len}")
     print(f"  vLLM GPU memory utilization: {args.gpu_memory_utilization}")
@@ -1838,6 +1859,15 @@ def main(argv=None):
     ]
     trainable_params = [p for _, p in trainable_named_params]
     validate_trainable_params(trainable_params)
+
+    if args.gradient_checkpointing:
+        # PEFT wrappers intercept gradient_checkpointing_enable; reach the base model.
+        base_for_gc = getattr(model, "base_model", None)
+        gc_target = base_for_gc if base_for_gc is not None and hasattr(base_for_gc, "gradient_checkpointing_enable") else model
+        gc_target.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        print(f"  Gradient checkpointing: enabled (use_reentrant=False) on {type(gc_target).__name__}")
 
     if args.train_mode in {"lora", "lora_full", "dora", "pissa", "milora", "randlora"}:
         if lora_rollout_backend == "http":
