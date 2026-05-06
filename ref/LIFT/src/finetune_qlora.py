@@ -152,6 +152,42 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--prompt_style",
+        type=str,
+        choices=["lift", "pissa"],
+        default="lift",
+        help=(
+            "Which training prompt + target format to use. "
+            "'lift' (default): LIFT BASE_PROMPT (literal '<s>', trailing whitespace, "
+            "newline before response, target '<output> <eos>'). "
+            "'pissa': PiSSA's clean format (no literal '<s>', no trailing whitespace, "
+            "target '<output>\\n<eos>'). Use 'pissa' to align with the published "
+            "QPiSSA recipe on MetaMathQA."
+        ),
+    )
+    parser.add_argument(
+        "--trainable_param_dtype",
+        type=str,
+        choices=["bf16", "fp32"],
+        default="bf16",
+        help=(
+            "Upcast trainable LoRA params (lora_A/lora_B) to this dtype after "
+            "model construction. fp32 matches the QPiSSA paper; bf16 (default) "
+            "is the standard QLoRA recipe."
+        ),
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        choices=["paged_adamw_8bit", "adamw"],
+        default="paged_adamw_8bit",
+        help=(
+            "'paged_adamw_8bit' (default): bnb 8-bit moments, paged for OOM "
+            "safety. 'adamw': torch.optim.AdamW with fp32 moments — matches "
+            "QPiSSA paper. Only meaningful at fp32 trainable_param_dtype."
+        ),
+    )
+    parser.add_argument(
         "--wandb_project",
         type=str,
         default=None,
@@ -238,6 +274,18 @@ def main():
     model.resize_token_embeddings(int(8 * math.ceil(len(tokenizer) / 8.0)))
 
     # --- Dataset ---
+    if args.prompt_style == "pissa":
+        # Match the QPiSSA published training prompt: no literal '<s>', no
+        # trailing whitespace, single newline between 'Response:' and target.
+        # Keeps qlora apples-to-apples with qfura/qdora when comparing
+        # MetaMathQA results.
+        import utils.data_utils as _data_utils
+        _data_utils.BASE_PROMPT = (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{instruction}\n\n### Response:"
+        )
+        print_rank_0("[prompt_style=pissa] using PiSSA-style prompt for training", args.global_rank)
     if len(args.data_path) == 1 and ".json" in args.data_path[0]:
         train_dataset = SupervisedDataset(
             data_path=args.data_path[0],
@@ -282,18 +330,46 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
+    # --- Optionally upcast trainable params to fp32 (matches QPiSSA paper) ---
+    # Replaces every trainable Parameter (lora_A.<adapter>.weight,
+    # lora_B.<adapter>.weight) with an fp32 copy. The frozen NF4 base weight
+    # (Params4bit) is untouched.
+    if args.trainable_param_dtype == "fp32":
+        n_upcast = 0
+        for parent_name, mod in list(model.named_modules()):
+            for attr_name, p in list(mod.named_parameters(recurse=False)):
+                if not p.requires_grad or p.dtype == torch.float32:
+                    continue
+                fp32_param = torch.nn.Parameter(p.data.to(torch.float32), requires_grad=True)
+                setattr(mod, attr_name, fp32_param)
+                n_upcast += 1
+        print_rank_0(f"[trainable_param_dtype=fp32] upcast {n_upcast} qlora params to fp32",
+                     args.global_rank)
+
     for name, param in model.named_parameters():
         if param.requires_grad:
-            print(f"param {name} is trainable")
+            print(f"param {name} is trainable (dtype={param.dtype})")
 
-    # --- Optimizer: PagedAdamW8bit on LoRA adapters (matches QLoRA paper) ---
+    # --- Optimizer ---
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = bnb.optim.PagedAdamW8bit(
-        trainable_params,
-        lr=args.learning_rate,
-        betas=(0.9, 0.95),
-        weight_decay=args.weight_decay,
-    )
+    if args.optimizer == "paged_adamw_8bit":
+        optimizer = bnb.optim.PagedAdamW8bit(
+            trainable_params,
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=args.weight_decay,
+        )
+    elif args.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(
+            trainable_params,
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=args.weight_decay,
+        )
+    else:
+        raise ValueError(f"unknown --optimizer: {args.optimizer}")
+    print_rank_0(f"[optimizer={args.optimizer}] {len(trainable_params)} trainable tensors",
+                 args.global_rank)
 
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps

@@ -150,6 +150,8 @@ Per-device batch × accum is the script default: `bsz=1, accum=16` for lora; `bs
 
 Bold = best within method. lora `lr=1e-4` and blocktt `lr ∈ {1e-4, 2e-4}` are from prior bsz=16 runs (Apr 14–15, 2026, plus the 2026-05-04 re-eval); blocktt `lr ∈ {4e-4, 6e-4, 8e-4}` were added 2026-05-05 to map the curve past the 3e-4 peak.
 
+![LR sweep at bsz=16 — lora vs FuRA, final loss and GSM8K](figs/math_lr_sweep_bsz16.png)
+
 ### Batch-Size Sweep (LR scaled with √(bsz/16))
 
 Per-device bsz × accum: `1×64`, `1×256` for lora; `2×32`, `2×128` for blocktt. Optimizer steps drop from 1842 → 462 (bsz=64) → 117 (bsz=256), but total fwd/bwd compute is unchanged.
@@ -161,7 +163,9 @@ LR-scaling baseline differs per method: lora used the bsz=16 lr=2e-4 reference (
 | Effective bsz | LR     | Final loss |   GSM8K |
 | ------------: | ------ | ---------: | ------: |
 |            64 | 2e-4   |      0.132 | **70.36** |
+|           256 | 2e-4   |      0.216 |   69.60 |
 |           256 | 4e-4   |      0.177 |   68.54 |
+|           256 | 6e-4   |      0.167 |   70.20 |
 
 #### BlockTT (output_one_block / pos_small / smerge_keep_trainable / rank=full, no calib)
 
@@ -169,27 +173,46 @@ LR-scaling baseline differs per method: lora used the bsz=16 lr=2e-4 reference (
 | ------------: | ------ | ---------: | ------: |
 |            64 | 4e-4   |      0.173 |   70.89 |
 |            64 | 6e-4   |      0.127 | **72.18** |
+|           256 | 6e-4   |      0.226 |   69.60 |
 |           256 | 8e-4   |      0.212 |   71.04 |
 |           256 | 1.2e-3 |      0.198 |   68.46 |
 
-Bold = best within method. The two extra blocktt rows (`bsz=64 lr=6e-4`, `bsz=256 lr=1.2e-3`) come from the 2026-05-05 follow-up that picked best bsz=16 LR (=3e-4) and applied √(bsz/16) scaling.
+#### Full FT
+
+| Effective bsz | LR     | Final loss |   GSM8K |
+| ------------: | ------ | ---------: | ------: |
+|            64 | 2e-5   |      0.135 | **72.56** |
+|           256 | 2e-5   |      0.237 |   69.07 |
+|           256 | 4e-5   |      0.191 |   68.39 |
+
+Bold = best within method. New rows added 2026-05-05: lora bsz=256 `lr ∈ {2e-4, 6e-4}`, blocktt bsz=256 `lr=6e-4`, and the full-FT bsz=64/256 sweep at `lr ∈ {2e-5, 4e-5}`. The blocktt bsz=64/256 entries with √-rule scaled LRs (6e-4 from best bsz=16 LR=3e-4, 1.2e-3 = ×4) come from the earlier 2026-05-05 chain.
+
+![Batch-size sweep — full FT, lora, FuRA, best LR per (method, bsz)](figs/math_bsz_sweep.png)
+
+The bsz curves use the gsm8k-best LR per (method, bsz). Full FT bsz=16 is `full-lr_1e-5-seed_43-projE` (71.19); lora bsz=16 is the LR-sweep best (lr=6e-5, 70.81); blocktt bsz=16 is the LR-sweep best (lr=3e-4, 71.57); bsz=64 best LRs are full=2e-5, lora=2e-4, blocktt=6e-4; bsz=256 best LRs are full=2e-5, lora=6e-4, blocktt=8e-4.
 
 ### Combined view — all sweep configs
 
 | Method  | Sweep | Effective bsz | LR     |   GSM8K |
 | ------- | ----- | ------------: | ------ | ------: |
-| blocktt | bsz   |            64 | 6e-4   |   **72.18** 🥇 |
+| full    | bsz   |            64 | 2e-5   |   **72.56** 🥇 |
+| blocktt | bsz   |            64 | 6e-4   |   72.18 |
 | blocktt | LR    |            16 | 3e-4   |   71.57 |
 | blocktt | bsz   |           256 | 8e-4   |   71.04 |
 | blocktt | bsz   |            64 | 4e-4   |   70.89 |
 | lora    | LR    |            16 | 6e-5   |   70.81 |
 | blocktt | LR    |            16 | 4e-4   |   70.43 |
 | lora    | bsz   |            64 | 2e-4   |   70.36 |
+| lora    | bsz   |           256 | 6e-4   |   70.20 |
 | lora    | LR    |            16 | 8e-5   |   69.83 |
 | lora    | LR    |            16 | 1e-4   |   69.83 |
+| lora    | bsz   |           256 | 2e-4   |   69.60 |
+| blocktt | bsz   |           256 | 6e-4   |   69.60 |
 | blocktt | LR    |            16 | 2e-4   |   69.52 |
+| full    | bsz   |           256 | 2e-5   |   69.07 |
 | lora    | bsz   |           256 | 4e-4   |   68.54 |
 | blocktt | bsz   |           256 | 1.2e-3 |   68.46 |
+| full    | bsz   |           256 | 4e-5   |   68.39 |
 | blocktt | LR    |            16 | 1e-4   |   67.70 |
 | blocktt | LR    |            16 | 8e-5   |   66.41 |
 | blocktt | LR    |            16 | 6e-4   |   66.34 |

@@ -346,7 +346,7 @@ def plot_panel_b(ax_top, ax_bot, base_index, full_weights, full_fmt,
     ax_bot.set_ylim(-0.05, 1.10)
     # Sub-title with extra top padding so it doesn't collide with the upper subplot.
     if show_subtitle:
-        ax_bot.set_title("Singular vector rotation |⟨U_i′, U_i⁰⟩|",
+        ax_bot.set_title(r"Singular vector rotation $\mathbf{U}_i'$ - $\mathbf{U}_i$",
                          fontsize=FONT_TITLE - 2, pad=8)
     ax_bot.set_xlabel("Singular index i", fontsize=FONT_LABEL + 4)
     # No y-label on the lower scatter (panel-(b) lower).
@@ -714,7 +714,7 @@ def main():
         if not args.no_titles:
             _render_panel_titles(fig1, gs1, [
                 "(a) Fraction in col(U)",
-                "(b) Singular value change S' - S₀",
+                r"(b) Singular value change $\mathbf{S}_i'$ - $\mathbf{S}_i$",
                 "(c) MATH-10K Training",
             ], y_fig=0.94)
 

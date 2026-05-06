@@ -24,7 +24,7 @@ Runs with missing or incomplete commonsense eval outputs (not included above):
 
 Commonsense reasoning, fine-tuning on Commonsense-170K (from `docs/25_ICML_Principal Weights Emerge after Rank Reduction for Reasoning-Focused Supervised Fine-Tuning.pdf`).
 
-Single unified table: upper half is LLaMA-2-7B (5 methods), lower half is LLaMA-3-8B (7 methods). "Trainable %" is trainable parameters as a fraction of total parameters in the model — directly read from training logs for our runs (fura/MiLoRA/RandLoRA), and computed from the LIFT codebase's 5-module default LoRA recipe (`q_proj k_proj v_proj up_proj down_proj`) for the LIFT-paper baselines (Full FT/LoRA/DoRA/PiSSA). Bold marks the column-best within each model section.
+Single unified table: upper half is LLaMA-2-7B (5 methods), lower half is LLaMA-3-8B (7 methods). "Trainable %" is trainable parameters as a fraction of total parameters in the model — directly read from training logs for our runs (fura/MiLoRA/RandLoRA), and computed from the LIFT codebase's 5-module default LoRA recipe (`q_proj k_proj v_proj up_proj down_proj`) for the LIFT-paper baselines (Full FT/LoRA/DoRA/PiSSA). FuRA on LLaMA-3-8B is the mean across 3 seeds (42, 43, 44); see "FuRA Seed Sweep" below for the per-seed numbers. All other rows are single-seed (seed=43). Bold marks the column-best within each model section.
 
 | Method               | Trainable % |           BoolQ |            PIQA |            SIQA |       HellaSwag |            Wino |           ARC-e |           ARC-c |            OBQA |             Avg |
 | -------------------- | ----------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: |
@@ -41,7 +41,7 @@ Single unified table: upper half is LLaMA-2-7B (5 methods), lower half is LLaMA-
 | PiSSA                |        1.39 |           74.90 |           87.70 |           82.30 |           95.30 |           87.70 |           92.90 |           81.40 |           87.00 |           85.90 |
 | MiLoRA               |        1.39 |           73.70 |           87.30 |           80.70 |           94.30 |           87.20 |           91.20 |           78.90 |           86.40 |           84.96 |
 | RandLoRA             |        0.33 |           73.10 |           85.50 |           79.40 |           93.10 |           85.90 |           87.90 |           75.90 |           85.40 |           83.28 |
-| FuRA                 |        1.46 | **76.60** | **89.90** | **83.20** | **96.80** | **89.70** | **93.60** | **84.10** | **89.40** | **87.91** |
+| FuRA (3-seed mean)   |        1.46 | **76.47** | **90.43** | **83.00** | **96.83** | **89.87** | **93.67** | **84.50** | **89.33** | **88.01** |
 
 ### Best Of Our Runs (LLaMA-3-8B)
 
@@ -64,7 +64,7 @@ Decompose each linear as `W = L · S · R` with L on the output side and R on th
 
 Side note on which side is small: for `output_one_block` (m=1, a=out_features, n=in_blocks, b=in_block_size), `btt_l.numel() = rank · n · out_features` and `btt_r.numel() = rank · in_features`, so **R is the small side** (factor of `n` smaller). With `pos_small`, R trains. Symmetrically for `input_one_block` (n=1), L is the small side and L trains.
 
-Takeaways: (i) Holding `S` as a separate trainable scaling (`keep_trainable`) is the strongest s-placement for **both** decomp orientations: 87.91 for `output_one_block` vs 86.79 for `input_one_block`, with the next-best non-keep_trainable variant (output `(LS) **R**`) at 87.12 in between. Merging `S` into one of the cores (parens) costs ~1–4 Avg points relative to keep_trainable. (ii) `output_one_block` still beats `input_one_block` at the same s-placement (87.91 vs 86.79 for keep_trainable; 87.12 vs 83.75 for the merged-into-frozen variant), confirming the small-core-on-input geometry helps. (iii) Seed variance is large (87.91 / 87.08 / 85.97 for the same `output_one_block + keep_trainable` recipe), so single-seed differences <1 Avg point should be read with caution.
+Takeaways: (i) Holding `S` as a separate trainable scaling (`keep_trainable`) is the strongest s-placement for **both** decomp orientations: 87.91 for `output_one_block` vs 86.79 for `input_one_block`, with the next-best non-keep_trainable variant (output `(LS) **R**`) at 87.12 in between. Merging `S` into one of the cores (parens) costs ~1–4 Avg points relative to keep_trainable. (ii) `output_one_block` still beats `input_one_block` at the same s-placement (87.91 vs 86.79 for keep_trainable; 87.12 vs 83.75 for the merged-into-frozen variant), confirming the small-core-on-input geometry helps. (iii) Seed variance for the headline `output_one_block + keep_trainable` recipe is small across consecutive seeds 42/43/44 (88.13 / 87.91 / 88.00, std=0.09 — see "FuRA Seed Sweep" below), but much larger across non-consecutive seeds 0/43/100 (85.97 / 87.91 / 87.08, std=0.81). The 3-seed mean reported in the paper table uses 42/43/44.
 
 #### FuRA (full) vs FuRA (PEFT) vs Full FT
 
@@ -79,6 +79,29 @@ When `train_position=both`, both cores `L` and `R` are trainable along with `S` 
 FuRA (full) is `blocktt-calib_none-lr_1e-5-decomp_output_one_block_pos_both_smerge_keep_trainable-seed_43` (from `last/`): both cores `L` and `R` plus singular values `S` are trainable (~7.10B params, 87.10% of 8.15B total). FuRA (PEFT) is the existing best LLaMA-3-8B FuRA run (`blocktt-lr_2e-4-decomp_output_one_block_pos_small_smerge_keep_trainable-seed_43`), training only the small core `R` and `S` (~118.7M params, 1.46%).
 
 Headline: FuRA (full) edges FuRA (PEFT) by +0.13 Avg (88.04 vs 87.91) and beats Full FT by +1.40, while the 60× difference in trainable parameters between FuRA (full) and FuRA (PEFT) buys almost nothing on Avg — all the gain comes from the spectral re-parameterization, not the extra parameters. Per-column the two FuRA variants split: full wins PIQA / ARC-e / ARC-c (+0.9 / +0.8 / +1.1), PEFT wins BoolQ / SIQA / Wino / OBQA (+0.5 / +0.3 / +0.4 / +0.6), HellaSwag ties.
+
+## FuRA Seed Sweep (3 epoch, LLaMA-3-8B)
+
+Three seeds of the FuRA (PEFT) recipe `output_one_block + pos_small + smerge_keep_trainable + lr_2e-4 + 3ep` on `commonsense_170k`. seed=43 is the existing headline run (under the legacy `blocktt-lr_2e-4-...` name); seed=42 and seed=44 use the modern `blocktt-calib_none-lr_2e-4-...` naming. All three share identical training hyperparameters (per-device bsz=8, grad-accum=2, max_seq=2048, linear LR schedule with 3% warmup) and identical eval (eval seed = 1234, full 8-task suite). Std is the population std across 3 seeds.
+
+| Seed                   |           BoolQ |            PIQA |            SIQA |       HellaSwag |            Wino |           ARC-e |           ARC-c |            OBQA |             Avg |
+| :--------------------- | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: |
+| seed=42                |           76.30 |           90.60 |           83.00 |           96.80 | **90.10** |           93.80 | **85.40** |           89.00 | **88.13** |
+| seed=43                | **76.60** |           89.90 | **83.20** |           96.80 |           89.70 |           93.60 |           84.10 |           89.40 |           87.91 |
+| seed=44                |           76.50 | **90.80** |           82.80 | **96.90** |           89.80 | **93.60** |           84.00 | **89.60** |           88.00 |
+| **Mean (3 seeds)** | **76.47** | **90.43** | **83.00** | **96.83** | **89.87** | **93.67** | **84.50** | **89.33** | **88.01** |
+| Std                    |            0.12 |            0.39 |            0.16 |            0.05 |            0.17 |            0.09 |            0.64 |            0.25 |            0.09 |
+
+Run dirs:
+- seed=42 → `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/blocktt-calib_none-lr_2e-4-decomp_output_one_block_pos_small_smerge_keep_trainable-seed_42/last/`
+- seed=43 → `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/blocktt-lr_2e-4-decomp_output_one_block_pos_small_smerge_keep_trainable-seed_43/`
+- seed=44 → `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/blocktt-calib_none-lr_2e-4-decomp_output_one_block_pos_small_smerge_keep_trainable-seed_44/last/`
+
+Launch logs (seeds 42 / 44):
+- `/data/yequan/fura/lift/launch_logs/gpu4_fura_3ep_seed42.log`
+- `/data/yequan/fura/lift/launch_logs/gpu5_fura_3ep_seed44.log`
+
+Takeaways: across-seed Avg std is **0.09** (range 87.91–88.13, span 0.22). Per-task std is largest on ARC-c (0.64) and PIQA (0.39), tightest on HellaSwag (0.05) and ARC-e (0.09). The seed=43 single-seed number used in the paper table (87.91) sits at the **lower end** of the seed distribution; the 3-seed mean (88.01) is +0.10 higher and is what now appears in the paper table.
 
 ## Full Eval Sweep (LLaMA-3-8B, `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B`)
 
@@ -176,24 +199,32 @@ Quick LR search to identify the best LR per method on Meta-Llama-3-8B before com
 - **Launch logs**:
   - GPU 4 lora chain → `/data/yequan/fura/lift/launch_logs/gpu4_sweep_lora_1ep.log`
   - GPU 7 blocktt chain → `/data/yequan/fura/lift/launch_logs/gpu7_sweep_blocktt_1ep.log`
-- **Status**: launched 2026-05-04 13:54 PDT, both chains still running (each ~12–13 h wall, finishing ~2026-05-05 02:30 PDT). Tables below are pending; will be filled when eval logs land.
+- **Status**: launched 2026-05-04 13:54 PDT; eval logs landed 2026-05-05. Tables below summarise BoolQ + OBQA from `<run>/last/commonsense/{boolq,openbookqa}/eval.log`.
 
 Bold marks the column-best within each table.
 
 ### LoRA LR Sweep (1 epoch, Meta-Llama-3-8B, rank=64, α=128, 5-mod)
 
-| LR     | Run config                                            |   BoolQ |    OBQA |     Avg |
-| ------ | ----------------------------------------------------- | ------: | ------: | ------: |
-| 7e-5   | `lora + rank_64 + alpha_128 + 1ep + lr_7e-5 (seed 43)` | (pending) | (pending) | (pending) |
-| 1e-4   | `lora + rank_64 + alpha_128 + 1ep + lr_1e-4 (seed 43)` | (pending) | (pending) | (pending) |
-| 2e-4   | `lora + rank_64 + alpha_128 + 1ep + lr_2e-4 (seed 43)` | (pending) | (pending) | (pending) |
-| 3e-4   | `lora + rank_64 + alpha_128 + 1ep + lr_3e-4 (seed 43)` | (pending) | (pending) | (pending) |
+| LR     | Run config                                             |   BoolQ |    OBQA |     Avg |
+| ------ | ------------------------------------------------------ | ------: | ------: | ------: |
+| 5e-5   | `lora + rank_64 + alpha_128 + 1ep + lr_5e-5 (seed 43)` |    76.0 |    89.8 |   82.90 |
+| 7e-5   | `lora + rank_64 + alpha_128 + 1ep + lr_7e-5 (seed 43)` |    **76.7** |    **90.4** |   **83.55** |
+| 1e-4   | `lora + rank_64 + alpha_128 + 1ep + lr_1e-4 (seed 43)` |    75.8 |    89.6 |   82.70 |
+| 2e-4   | `lora + rank_64 + alpha_128 + 1ep + lr_2e-4 (seed 43)` |    71.9 |    83.2 |   77.55 |
+| 3e-4   | `lora + rank_64 + alpha_128 + 1ep + lr_3e-4 (seed 43)` | (training-only, no eval logs yet) | | |
 
 ### FuRA (BlockTT) LR Sweep (1 epoch, Meta-Llama-3-8B, rank=full, output_one_block / pos_small / smerge_keep_trainable)
 
-| LR     | Run config                                                                        |   BoolQ |    OBQA |     Avg |
-| ------ | --------------------------------------------------------------------------------- | ------: | ------: | ------: |
-| 7e-5   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_7e-5 (seed 43)` | (pending) | (pending) | (pending) |
-| 1e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_1e-4 (seed 43)` | (pending) | (pending) | (pending) |
-| 2e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_2e-4 (seed 43)` | (pending) | (pending) | (pending) |
-| 3e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_3e-4 (seed 43)` | (pending) | (pending) | (pending) |
+| LR     | Run config                                                                                              |   BoolQ |    OBQA |     Avg |
+| ------ | ------------------------------------------------------------------------------------------------------- | ------: | ------: | ------: |
+| 7e-5   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_7e-5 (seed 43)` |    62.0 |    84.4 |   73.20 |
+| 1e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_1e-4 (seed 43)` |    73.5 |    87.8 |   80.65 |
+| 2e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_2e-4 (seed 43)` |    **75.7** |    **90.4** |   **83.05** |
+| 4e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_4e-4 (seed 43)` |    73.2 |    88.2 |   80.70 |
+| 6e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_6e-4 (seed 43)` |    72.5 |    87.0 |   79.75 |
+| 8e-4   | `blocktt + calib_none + output_one_block + pos_small + smerge_keep_trainable + 1ep + lr_8e-4 (seed 43)` |    66.7 |    82.0 |   74.35 |
+
+**Takeaways:**
+- **LoRA peaks at 7e-5** (Avg 83.55) and degrades sharply past 1e-4; 2e-4 already drops ~6 pts on Avg, so the published `lr_2e-4` recipe is past the cliff for 1-epoch 5-mod training.
+- **FuRA peaks at 2e-4** (Avg 83.05), roughly **3× the optimal LoRA LR**, consistent with the BlockTT-vs-LoRA effective-LR story (small-core trains a Vᵀ factor with very different conditioning than a low-rank `B`). Above 4e-4 the curve flattens; 8e-4 is past the cliff.
+- At their respective best LRs the two methods are within ~0.5 pts on Avg (LoRA 83.55 vs FuRA 83.05) on this 2-task probe — the full 8-task sweep remains the tiebreaker.

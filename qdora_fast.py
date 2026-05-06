@@ -168,7 +168,7 @@ class Qdora4bitLinear(nn.Module):
         return out
 
     @torch.no_grad()
-    def merge_to_dense_bf16(self) -> nn.Linear:
+    def merge_to_dense_bf16(self, target_device=None) -> nn.Linear:
         """Materialize a single bf16 nn.Linear equivalent to this DoRA layer.
 
         Used at end-of-training to produce a checkpoint loadable by the eval
@@ -176,6 +176,10 @@ class Qdora4bitLinear(nn.Module):
 
         Output linear weight = mag_norm_scale * (W + scaling * B @ A), where
         mag_norm_scale = magnitude / ||W + scaling * B @ A||_c.
+
+        target_device: if set, place the merged nn.Linear on this device after
+        computation. Use "cpu" when the full bf16 model would not fit on the
+        compute device (e.g. 70B on a single 94 GB H100).
         """
         weight_dq = bnb.functional.dequantize_4bit(
             self.base_layer.weight.data,
@@ -187,6 +191,18 @@ class Qdora4bitLinear(nn.Module):
         scale = (self.magnitude / weight_norm).view(-1, 1)  # (out, 1)
         new_weight = scale * merged
 
+        if target_device is not None:
+            new_weight = new_weight.to(target_device)
+            bias_data = (
+                self.base_layer.bias.data.to(torch.bfloat16).to(target_device)
+                if self.base_layer.bias is not None else None
+            )
+        else:
+            bias_data = (
+                self.base_layer.bias.data.to(torch.bfloat16)
+                if self.base_layer.bias is not None else None
+            )
+
         out = nn.Linear(
             self.in_features,
             self.out_features,
@@ -195,8 +211,8 @@ class Qdora4bitLinear(nn.Module):
             dtype=torch.bfloat16,
         )
         out.weight.data.copy_(new_weight)
-        if self.base_layer.bias is not None:
-            out.bias.data.copy_(self.base_layer.bias.data.to(torch.bfloat16))
+        if bias_data is not None:
+            out.bias.data.copy_(bias_data)
         return out
 
 
@@ -252,7 +268,7 @@ def convert_to_qdora_fast(
 
 
 @torch.no_grad()
-def materialize_qdora_to_linear(model: nn.Module) -> int:
+def materialize_qdora_to_linear(model: nn.Module, target_device=None) -> int:
     """Replace every Qdora4bitLinear with its dense bf16 nn.Linear merge,
     then strip the BitsAndBytes quantization metadata so the saved checkpoint
     loads as a plain bf16 model.
@@ -290,12 +306,18 @@ def materialize_qdora_to_linear(model: nn.Module) -> int:
             replacements.append((full_name, module))
 
     for full_name, module in replacements:
-        merged = module.merge_to_dense_bf16()
+        merged = module.merge_to_dense_bf16(target_device=target_device)
         path = full_name.split(".")
         parent = model
         for key in path[:-1]:
             parent = getattr(parent, key)
         setattr(parent, path[-1], merged)
+        # Free GPU memory held by the source Qdora4bitLinear before the next
+        # materialization step. This matters when target_device='cpu' because
+        # otherwise the original NF4 weights + intermediates accumulate.
+        del module
+        if target_device is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Strip every BitsAndBytes-related attribute. Use __dict__.pop so we
     # remove instance attributes without touching class-level descriptors

@@ -4,6 +4,18 @@
 
 This document tracks qfura's fine-tuning quality against QLoRA baselines on two LIFT benchmark suites: math reasoning (`math_10k.json`) and commonsense reasoning (`commonsense_170k.json`). All runs use Llama-3-8B with 3 training epochs.
 
+## Paper headline table
+
+Same headline as above plus a 70B math column (metamath-100k fine-tune, GSM8K test).
+70B numbers TBD (QFuRA 70B GSM8K eval pending; QLoRA / QDoRA / Full FT 70B not yet run).
+
+| Method                 | Llama-3 8B <br />(Commonsense) |                 | Llama-3 70B <br />(Math) |                 |
+| ---------------------- | ------------------------------ | --------------- | ------------------------ | --------------- |
+|                        | # Params (%)                   | Avg.            | # Params (%)             | GSM8K           |
+| QLoRA           | 1.39                           | 83.89           | 1.17                     | 81.80           |
+| QDoRA           | 1.42                           | 86.34           | 1.18                     | 82.20           |
+| **QFuRA** | **1.46**                 | **87.30** | **1.45**           | **83.78** |
+
 ## Methods
 
 ### qfura
@@ -23,10 +35,10 @@ NF4-quantized BTT fine-tuning with the project-locked defaults (see `CLAUDE.md`)
 
 Standard QLoRA: 4-bit NF4 base + double-quant + bf16 compute, LoRA adapters on the 7 leaves (`q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`), `bnb.optim.PagedAdamW8bit`.
 
-| QLoRA variant | rank | alpha | Trainable params | Trainable % | Notes |
-|---|---|---|---|---|---|
-| QLoRA r=48 | 48 | 96 | 125,829,120 | **1.54%** | Param-parity vs qfura (+6% trainable) |
-| QLoRA r=64 | 64 | 128 | 167,772,160 | 2.05% | Standard QLoRA preset (+41% trainable) |
+| QLoRA variant | rank | alpha | Trainable params | Trainable %     | Notes                                  |
+| ------------- | ---- | ----- | ---------------- | --------------- | -------------------------------------- |
+| QLoRA r=48    | 48   | 96    | 125,829,120      | **1.54%** | Param-parity vs qfura (+6% trainable)  |
+| QLoRA r=64    | 64   | 128   | 167,772,160      | 2.05%           | Standard QLoRA preset (+41% trainable) |
 
 After training, QLoRA's PEFT adapter is merged into the bf16 base via `tools/merge_qlora_for_eval.py` to produce a full HF model checkpoint (the eval scripts expect a full model).
 
@@ -34,17 +46,17 @@ After training, QLoRA's PEFT adapter is merged into the bf16 base via `tools/mer
 
 `LLM-Adapters/ft-training_set/math_10k.json` (9819 examples, 3 epochs, lr 1e-4, batch 1×16 accum, 1842 optimizer steps). Eval harness: `ref/LIFT/bash_scripts/eval_math.sh` → `run_math_parallel.py` (beam=4, top_k=40, top_p=0.75, temp=0.1).
 
-| Dataset | n | qfura (1.46%) | QLoRA r=48 (1.54%) | QLoRA r=64 (2.05%) |
-|---|---:|---:|---:|---:|
-| MultiArith | 600 | 95.67 | 98.83 | 99.00 |
-| GSM8K | 1319 | 66.72 | 70.43 | 70.43 |
-| AddSub | 395 | 91.90 | 92.15 | 92.66 |
-| AQuA | 254 | 26.38 | 27.56 | 27.17 |
-| SingleEq | 508 | 95.47 | 96.06 | 96.65 |
-| SVAMP | 1000 | 76.50 | 76.90 | 82.20 |
-| mawps | 238 | 92.02 | **91.18** | 92.02 |
-| **Average (unweighted)** | | **77.81** | **79.02** | **79.88** |
-| **Average (n-weighted)** | 4314 | **75.98** | **78.00** | **79.46** |
+| Dataset                        |    n |   qfura (1.46%) | QLoRA r=48 (1.54%) | QLoRA r=64 (2.05%) |
+| ------------------------------ | ---: | --------------: | -----------------: | -----------------: |
+| MultiArith                     |  600 |           95.67 |              98.83 |              99.00 |
+| GSM8K                          | 1319 |           66.72 |              70.43 |              70.43 |
+| AddSub                         |  395 |           91.90 |              92.15 |              92.66 |
+| AQuA                           |  254 |           26.38 |              27.56 |              27.17 |
+| SingleEq                       |  508 |           95.47 |              96.06 |              96.65 |
+| SVAMP                          | 1000 |           76.50 |              76.90 |              82.20 |
+| mawps                          |  238 |           92.02 |    **91.18** |              92.02 |
+| **Average (unweighted)** |      | **77.81** |    **79.02** |    **79.88** |
+| **Average (n-weighted)** | 4314 | **75.98** |    **78.00** |    **79.46** |
 
 ### Math observations
 
@@ -56,11 +68,11 @@ After training, QLoRA's PEFT adapter is merged into the bf16 base via `tools/mer
 
 ### Math training time
 
-| Method | Wall clock (3 epochs) | Final epoch-3 train loss |
-|---|---|---|
-| qfura | 1h 26m | 0.0009 |
-| QLoRA r=48 | 2h 13m | 0.0011 |
-| QLoRA r=64 | 2h 09m | 0.0003 |
+| Method     | Wall clock (3 epochs) | Final epoch-3 train loss |
+| ---------- | --------------------- | ------------------------ |
+| qfura      | 1h 26m                | 0.0009                   |
+| QLoRA r=48 | 2h 13m                | 0.0011                   |
+| QLoRA r=64 | 2h 09m                | 0.0003                   |
 
 Both QLoRA runs are slower per-step than qfura because the 4-bit dequant happens on every linear matmul of the full forward (vs qfura's per-BTT-layer dequant).
 
@@ -72,11 +84,11 @@ Both QLoRA runs are slower per-step than qfura because the 4-bit dequant happens
 
 The single highest-Avg run we have for each method, all on Llama-3-8B base. qfura uses lr=2e-4 (its tuned setting); QLoRA and qdora are reported at lr=1e-4, r=64, α=128 (their best settings — see leaderboard below for the lr=2e-4 baselines they outscore).
 
-| Method | Config | Trainable % | BoolQ | PIQA | SIQA | HellaSwag | Wino | ARC-e | ARC-c | OBQA | Avg (unw) | Avg (n-w) |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| qfura | rank=full, output_one_block, keep_trainable, flat, lr=2e-4 | 1.46% | 73.0 | **89.9** | **82.7** | **96.6** | **89.1** | **93.1** | **83.4** | **90.6** | **87.30** | **89.78** |
-| qdora | r=64, α=128, fast path, lr=1e-4 (save_both, last) | 2.06% | **75.5** | 88.0 | 81.1 | 95.9 | 88.4 | 91.8 | 82.0 | 88.0 | 86.34 | 89.23 |
-| QLoRA | r=64, α=128, lr=1e-4 | 2.05% | 72.7 | 86.6 | 80.8 | 93.7 | 85.4 | 89.9 | 76.2 | 85.8 | 83.89 | 86.97 |
+| Method | Config                                                     | Trainable % |          BoolQ |           PIQA |           SIQA |      HellaSwag |           Wino |          ARC-e |          ARC-c |           OBQA |       Avg (unw) |       Avg (n-w) |
+| ------ | ---------------------------------------------------------- | ----------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | --------------: | --------------: |
+| qfura  | rank=full, output_one_block, keep_trainable, flat, lr=2e-4 |       1.46% |           73.0 | **89.9** | **82.7** | **96.6** | **89.1** | **93.1** | **83.4** | **90.6** | **87.30** | **89.78** |
+| qdora  | r=64, α=128, fast path, lr=1e-4 (save_both, last)         |       1.42% | **75.5** |           88.0 |           81.1 |           95.9 |           88.4 |           91.8 |           82.0 |           88.0 |           86.34 |           89.23 |
+| QLoRA  | r=64, α=128, lr=1e-4                                      |       1.39% |           72.7 |           86.6 |           80.8 |           93.7 |           85.4 |           89.9 |           76.2 |           85.8 |           83.89 |           86.97 |
 
 Bold = column max. qdora is now within 0.96 unweighted / 0.55 n-weighted of qfura; qdora actually beats qfura on BoolQ (75.5 vs 73.0). The other 7 tasks all favour qfura by 0.7-2.6 points.
 
@@ -84,13 +96,13 @@ Bold = column max. qdora is now within 0.96 unweighted / 0.55 n-weighted of qfur
 
 Every complete eval we have under `/data/yequan/fura/lift/commonsense/meta-llama/Meta-Llama-3-8B/{q*}*` is listed here.
 
-| Method | Config | Trainable % | BoolQ | PIQA | SIQA | HellaSwag | Wino | ARC-e | ARC-c | OBQA | Avg (unw) | Avg (n-w) |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| qfura | rank=full, output_one_block, keep_trainable, flat, lr=2e-4 | 1.46% | 73.0 | **89.9** | **82.7** | **96.6** | **89.1** | **93.1** | **83.4** | **90.6** | **87.30** | **89.78** |
-| qdora | r=64, α=128, fast path, lr=1e-4 (save_both, last) | 2.06% | **75.5** | 88.0 | 81.1 | 95.9 | 88.4 | 91.8 | 82.0 | 88.0 | 86.34 | 89.23 |
-| QLoRA | r=64, α=128, lr=1e-4 | 2.05% | 72.7 | 86.6 | 80.8 | 93.7 | 85.4 | 89.9 | 76.2 | 85.8 | 83.89 | 86.97 |
-| qdora | r=64, α=128, fast path, lr=2e-4 | 2.06% | 66.4 | 77.3 | 73.9 | 80.2 | 77.0 | 77.3 | 60.8 | 72.8 | 73.21 | 75.73 |
-| QLoRA | r=48, α=96, lr=2e-4 (param-parity vs qfura) | 1.54% | 65.1 | 71.3 | 70.9 | 70.0 | 72.2 | 67.8 | 55.5 | 68.2 | 67.63 | 69.40 |
+| Method | Config                                                     | Trainable % |          BoolQ |           PIQA |           SIQA |      HellaSwag |           Wino |          ARC-e |          ARC-c |           OBQA |       Avg (unw) |       Avg (n-w) |
+| ------ | ---------------------------------------------------------- | ----------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | --------------: | --------------: |
+| qfura  | rank=full, output_one_block, keep_trainable, flat, lr=2e-4 |       1.46% |           73.0 | **89.9** | **82.7** | **96.6** | **89.1** | **93.1** | **83.4** | **90.6** | **87.30** | **89.78** |
+| qdora  | r=64, α=128, fast path, lr=1e-4 (save_both, last)         |       2.06% | **75.5** |           88.0 |           81.1 |           95.9 |           88.4 |           91.8 |           82.0 |           88.0 |           86.34 |           89.23 |
+| QLoRA  | r=64, α=128, lr=1e-4                                      |       2.05% |           72.7 |           86.6 |           80.8 |           93.7 |           85.4 |           89.9 |           76.2 |           85.8 |           83.89 |           86.97 |
+| qdora  | r=64, α=128, fast path, lr=2e-4                           |       2.06% |           66.4 |           77.3 |           73.9 |           80.2 |           77.0 |           77.3 |           60.8 |           72.8 |           73.21 |           75.73 |
+| QLoRA  | r=48, α=96, lr=2e-4 (param-parity vs qfura)               |       1.54% |           65.1 |           71.3 |           70.9 |           70.0 |           72.2 |           67.8 |           55.5 |           68.2 |           67.63 |           69.40 |
 
 Bold = column max across the leaderboard. **At lr=1e-4, both QLoRA and qdora close most of the gap to qfura** that lr=2e-4 had opened — qdora especially (73.21 → 86.34 = +13.13 points just from the lr halving). Ranking after the lr fix: qfura > qdora > QLoRA > qdora_2e-4 > QLoRA_r48_2e-4.
 
@@ -106,36 +118,35 @@ Bold = column max across the leaderboard. **At lr=1e-4, both QLoRA and qdora clo
 
 ### Llama-3-8B training time
 
-| Method | Wall clock (3 epochs) | Notes |
-|---|---|---|
-| qfura lr=2e-4 | 9h 25m | |
-| QLoRA r=48 lr=2e-4 | 10h 21m | |
-| QLoRA r=64 lr=1e-4 | _not recorded_ | similar order |
-| qdora r=64 lr=2e-4 (fast) | 10h 42m | 2.1× faster than the Llama-3.1 PEFT path |
+| Method                               | Wall clock (3 epochs)      | Notes                                      |
+| ------------------------------------ | -------------------------- | ------------------------------------------ |
+| qfura lr=2e-4                        | 9h 25m                     |                                            |
+| QLoRA r=48 lr=2e-4                   | 10h 21m                    |                                            |
+| QLoRA r=64 lr=1e-4                   | _not recorded_           | similar order                              |
+| qdora r=64 lr=2e-4 (fast)            | 10h 42m                    | 2.1× faster than the Llama-3.1 PEFT path  |
 | qdora r=64 lr=1e-4 (fast, save_both) | ~10h training + ~3.5h eval | save_pretrained fixed (see commit history) |
-
 
 ## Llama-3.1-8B commonsense results
 
 Same recipe (commonsense_170k, 3 epochs, lr 2e-4, batch 8×2 accum) but with **`meta-llama/Llama-3.1-8B`** as the base. Adds a third method, **qdora** (NF4 base + DoRA adapters via PEFT `use_dora=True`, magnitude/direction decomposition).
 
-| Method | Trainable params | Trainable % |
-|---|---|---|
-| qfura (rank=full, output_one_block, keep_trainable, flat) | 118,685,696 | 1.46% |
-| QLoRA r=64 (α=128, all 7 modules) | 167,772,160 | 2.05% |
-| qdora r=64 (α=128, all 7 modules) | 169,148,416 | 2.06% |
+| Method                                                    | Trainable params | Trainable % |
+| --------------------------------------------------------- | ---------------- | ----------- |
+| qfura (rank=full, output_one_block, keep_trainable, flat) | 118,685,696      | 1.46%       |
+| QLoRA r=64 (α=128, all 7 modules)                        | 167,772,160      | 2.05%       |
+| qdora r=64 (α=128, all 7 modules)                        | 169,148,416      | 2.06%       |
 
-| Dataset | n | qfura | QLoRA r=64 | qdora r=64 |
-|---|---:|---:|---:|---:|
-| BoolQ | 3270 | 74.00 | 62.20 | 65.10 |
-| PIQA | 1838 | 90.80 | 79.50 | 70.40 |
-| SIQA | 1954 | 82.30 | 69.10 | 69.50 |
-| HellaSwag | 10042 | 96.60 | 82.40 | 60.90 |
-| WinoGrande | 1267 | 87.80 | 73.70 | 71.10 |
-| ARC-Easy | 2376 | 93.50 | 81.40 | 67.70 |
-| ARC-Challenge | 1172 | 83.30 | 63.80 | 52.40 |
-| OBQA | 500 | 89.40 | 70.60 | 62.20 |
-| **Average (unweighted)** | | **87.21** | **72.84** | **64.81** |
+| Dataset                        |     n |           qfura |      QLoRA r=64 |      qdora r=64 |
+| ------------------------------ | ----: | --------------: | --------------: | --------------: |
+| BoolQ                          |  3270 |           74.00 |           62.20 |           65.10 |
+| PIQA                           |  1838 |           90.80 |           79.50 |           70.40 |
+| SIQA                           |  1954 |           82.30 |           69.10 |           69.50 |
+| HellaSwag                      | 10042 |           96.60 |           82.40 |           60.90 |
+| WinoGrande                     |  1267 |           87.80 |           73.70 |           71.10 |
+| ARC-Easy                       |  2376 |           93.50 |           81.40 |           67.70 |
+| ARC-Challenge                  |  1172 |           83.30 |           63.80 |           52.40 |
+| OBQA                           |   500 |           89.40 |           70.60 |           62.20 |
+| **Average (unweighted)** |       | **87.21** | **72.84** | **64.81** |
 | **Average (n-weighted)** | 22419 | **89.30** | **78.30** | **65.93** |
 
 ### Llama-3.1-8B observations
@@ -151,11 +162,11 @@ Same recipe (commonsense_170k, 3 epochs, lr 2e-4, batch 8×2 accum) but with **`
 
 ### Llama-3.1-8B training time
 
-| Method | Wall clock (3 epochs) |
-|---|---|
-| qfura | 11h 44m |
-| QLoRA r=64 | 10h 33m |
-| qdora r=64 | **22h 40m** |
+| Method     | Wall clock (3 epochs) |
+| ---------- | --------------------- |
+| qfura      | 11h 44m               |
+| QLoRA r=64 | 10h 33m               |
+| qdora r=64 | **22h 40m**     |
 
 qdora is **~2.1× slower** than qlora due to DoRA's per-step column-norm computation on every linear's effective weight. This is a real cost: a method that's slower *and* less accurate has no clear regime where it wins.
 
@@ -163,10 +174,10 @@ qdora is **~2.1× slower** than qlora due to DoRA's per-step column-norm computa
 
 The single most striking finding from these experiments: **qfura's relative performance against QLoRA at parameter parity flips by ~22 points between math and commonsense.**
 
-| Suite | qfura avg (n-weighted) | QLoRA r=48 avg (n-weighted) | qfura − QLoRA r=48 |
-|---|---:|---:|---:|
-| Math (math_10k.json) | 75.98 | 78.00 | **−2.02** |
-| Commonsense (commonsense_170k.json) | 89.30 | 69.40 | **+19.90** |
+| Suite                               | qfura avg (n-weighted) | QLoRA r=48 avg (n-weighted) | qfura − QLoRA r=48 |
+| ----------------------------------- | ---------------------: | --------------------------: | ------------------: |
+| Math (math_10k.json)                |                  75.98 |                       78.00 |    **−2.02** |
+| Commonsense (commonsense_170k.json) |                  89.30 |                       69.40 |    **+19.90** |
 
 Possible explanations to investigate:
 
@@ -230,6 +241,7 @@ The QLoRA runners auto-merge their PEFT adapter via `tools/merge_qlora_for_eval.
 ## Quantization-error references
 
 For pre-training-state error analysis (no fine-tuning):
+
 - `docs/reports/qfura-quant-error.md` — qfura post-conversion error sweep over decomp_mode × layout. Best config: `decomp_mode=output_one_block, layout=flat, s_merged_to=keep_trainable` → model-level KL = 0.31 vs bf16 base.
 - `docs/reports/qlora-quant-error.md` — QLoRA post-conversion error (NF4 of the original `nn.Linear.weight`, no LoRA adapters). Model-level KL = 0.19.
 

@@ -33,6 +33,7 @@ blocktt_rank="${blocktt_rank:-full}"
 trainable_type="${trainable_type:-all}"
 lr="${lr:-2e-4}"
 seed="${seed:-43}"
+blocktt_input_factorization="${blocktt_input_factorization:-}"
 MAX_STEPS="${MAX_STEPS:-0}"
 PER_DEVICE_TRAIN_BS="${PER_DEVICE_TRAIN_BS:-8}"
 GRAD_ACC_STEPS="${GRAD_ACC_STEPS:-2}"
@@ -57,6 +58,11 @@ run_name="${run_name:-$(basename "$OUTPUT")}"
 mkdir -p $OUTPUT
 
 cd ${SRC_DIR}
+
+extra_args=()
+if [ -n "${blocktt_input_factorization}" ]; then
+    extra_args+=( --blocktt_input_factorization "${blocktt_input_factorization}" )
+fi
 
 accelerate launch \
     --num_machines 1 \
@@ -93,6 +99,7 @@ accelerate launch \
     --wandb_project "${wandb_project}" \
     --wandb_run_name "${run_name}" \
     --max_steps ${MAX_STEPS} \
+    "${extra_args[@]}" \
     --output_dir $OUTPUT 2> >(tee $OUTPUT/err.log >&2) | tee $OUTPUT/training.log
 
     # --val_set_size 120 \

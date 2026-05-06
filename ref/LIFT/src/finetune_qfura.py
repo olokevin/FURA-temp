@@ -312,6 +312,19 @@ def parse_args():
         help="Align attention BTT blocks with head structure")
     parser.add_argument("--no_blocktt_factorize_by_head", action="store_false",
         dest="blocktt_factorize_by_head")
+    parser.add_argument(
+        "--blocktt_input_factorization",
+        type=str,
+        default=None,
+        help=(
+            "Override input-side (n,b) factorization. Accepts: 'head' / 'closest' / "
+            "'n,b' as a scalar applied to all modules, or a JSON/Python dict literal "
+            "mapping group names (qkv, o, mlp_upgate, mlp_down) or leaf names "
+            "(q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj) to "
+            "individual specs. When set, this overrides --blocktt_factorize_by_head "
+            "for any module covered by the spec."
+        ),
+    )
     parser.add_argument("--no_train_bias", action="store_true",
         help="Freeze BTT biases")
 
@@ -527,6 +540,7 @@ def main():
                 factorize_by_head=args.blocktt_factorize_by_head,
                 convert_mode="svd",
                 init_mode="default",
+                input_factorization=args.blocktt_input_factorization,
             )
             print(
                 f"[qfura streaming] converted+quantised {qstream_stats['num_converted']} "
@@ -575,6 +589,7 @@ def main():
                 train_position=args.train_position,
                 factorize_by_head=args.blocktt_factorize_by_head,
                 model_config=model.config,
+                input_factorization=args.blocktt_input_factorization,
             )
             stats = configure_blocktt_trainability(
                 model,

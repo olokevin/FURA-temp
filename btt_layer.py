@@ -166,6 +166,136 @@ def _closest_factor_pair(d):
     return best_a, best_b
 
 
+BLOCKTT_INPUT_FACTORIZATION_GROUPS = BLOCKTT_DECOMP_GROUP_TO_MODULES
+BLOCKTT_INPUT_FACTORIZATION_GROUP_ALIASES = BLOCKTT_DECOMP_GROUP_ALIASES
+
+
+def _parse_input_factorization_pair(value):
+    """Parse a single (n, b) spec from str/tuple/list/None.
+
+    Accepted forms:
+      - None: returns None (caller decides default).
+      - "head" / "closest": returns the literal string sentinel.
+      - "n,b" string (or "(n, b)"): returns (int, int).
+      - tuple/list of two ints: returns (int, int).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"head", "closest"}:
+            return s
+        s = s.strip("()[] ")
+        parts = [p for p in re.split(r"[,\s]+", s) if p]
+        if len(parts) != 2:
+            raise ValueError(
+                f"input_factorization spec must be 'head', 'closest', or 'n,b'; got {value!r}"
+            )
+        try:
+            n, b = int(parts[0]), int(parts[1])
+        except ValueError as exc:
+            raise ValueError(
+                f"input_factorization spec must be ints 'n,b'; got {value!r}"
+            ) from exc
+        return (n, b)
+    if isinstance(value, (tuple, list)):
+        if len(value) != 2:
+            raise ValueError(
+                f"input_factorization tuple must have length 2; got {value!r}"
+            )
+        return (int(value[0]), int(value[1]))
+    raise ValueError(
+        f"input_factorization spec type {type(value).__name__} not supported"
+    )
+
+
+def _parse_input_factorization_arg(value):
+    """Parse the user-facing --blocktt_input_factorization argument.
+
+    Returns:
+      - None → caller falls back to legacy behavior (factorize_by_head flag).
+      - dict[str, spec] → per-group/per-module mapping. Each spec is one of:
+            "head", "closest", or (n, b) tuple.
+      - "head" / "closest" → scalar sentinel applied to all modules.
+      - (n, b) tuple → scalar applied to all modules.
+
+    Accepted user input:
+      - None: return None.
+      - bare string "head" / "closest" / "n,b": scalar.
+      - JSON/Python dict literal mapping group names (qkv, o, mlp_upgate,
+        mlp_down) or leaf module names (q_proj, ...) to specs.
+    """
+    if value is None:
+        return None
+    parsed_mapping = _parse_decomp_mode_mapping_literal(value) if isinstance(value, str) else None
+    if parsed_mapping is None and not isinstance(value, dict):
+        # Scalar: a string sentinel or "n,b", or a tuple.
+        return _parse_input_factorization_pair(value)
+    raw_dict = parsed_mapping if parsed_mapping is not None else value
+    out = {}
+    for raw_key, raw_value in raw_dict.items():
+        if not isinstance(raw_key, str):
+            raise ValueError(
+                "--blocktt_input_factorization dict keys must be strings"
+            )
+        key = raw_key.strip()
+        normalized_group = BLOCKTT_INPUT_FACTORIZATION_GROUP_ALIASES.get(key, key)
+        if normalized_group in BLOCKTT_INPUT_FACTORIZATION_GROUPS:
+            for module_name in BLOCKTT_INPUT_FACTORIZATION_GROUPS[normalized_group]:
+                out[module_name] = _parse_input_factorization_pair(raw_value)
+        else:
+            # Treat as a leaf module name (q_proj, down_proj, ...).
+            out[key] = _parse_input_factorization_pair(raw_value)
+    return out
+
+
+def _resolve_input_factorization_for_module(
+    spec, child_name, in_features, head_factorization,
+):
+    """Resolve a per-module (n, b) override given the parsed spec.
+
+    Args:
+      spec: result of _parse_input_factorization_arg, may be None / dict / str / tuple.
+      child_name: leaf module name (e.g. 'q_proj', 'down_proj').
+      in_features: incoming dim of the Linear.
+      head_factorization: (num_heads, head_dim) computed from model_config, or None.
+
+    Returns:
+      None → caller falls back to legacy/factorize_by_head behavior.
+      "closest" sentinel → caller uses _closest_factor_pair.
+      "head" sentinel → caller uses head_factorization (and falls back to
+                        _closest_factor_pair if head_factorization is None,
+                        i.e. mlp module without a head structure).
+      (n, b) tuple → validated; n*b must equal in_features.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, dict):
+        if child_name not in spec:
+            return None
+        chosen = spec[child_name]
+    else:
+        chosen = spec
+    if chosen is None:
+        return None
+    if isinstance(chosen, str):
+        if chosen == "closest":
+            return "closest"
+        if chosen == "head":
+            return "head"
+        raise ValueError(
+            f"resolved input_factorization spec for '{child_name}' must be "
+            f"'head', 'closest', or (n, b); got {chosen!r}"
+        )
+    n, b = chosen
+    if n <= 0 or b <= 0 or n * b != in_features:
+        raise ValueError(
+            f"input_factorization for '{child_name}' must satisfy n*b={in_features}; "
+            f"got (n={n}, b={b})"
+        )
+    return (n, b)
+
+
 def _resolve_blocktt_trainable_sides(left_size, right_size, train_position):
     if train_position not in {"small", "large", "both"}:
         raise ValueError("BlockTT train_position must be one of: small, large, both")
@@ -241,9 +371,11 @@ def convert_linear_to_btt(
     model_config=None,
     convert_mode="svd",
     allow_non_cuda=False,
+    input_factorization=None,
 ):
     if btt_rank is None:
         btt_rank = "full"
+    parsed_input_factorization = _parse_input_factorization_arg(input_factorization)
     if forward_impl != "einsum":
         warnings.warn(
             "forward_impl is ignored by the canonical BTTLayer implementation.",
@@ -314,8 +446,9 @@ def convert_linear_to_btt(
             layer_decomp_mode = normalized_decomp_mode[child_name]
 
         output_factorization = None
-        input_factorization = None
-        if factorize_by_head and model_config is not None:
+        layer_input_factorization = None
+        head_input_for_module = None
+        if model_config is not None:
             num_heads = getattr(model_config, "num_attention_heads", None)
             num_kv_heads = getattr(model_config, "num_key_value_heads", num_heads)
             head_dim = getattr(model_config, "head_dim", None)
@@ -324,12 +457,42 @@ def convert_linear_to_btt(
                 if hidden_size is not None:
                     head_dim = hidden_size // num_heads
             if num_heads is not None and head_dim is not None:
-                if child_name == "q_proj":
-                    output_factorization = (num_heads, head_dim)
-                elif child_name in ("k_proj", "v_proj"):
-                    output_factorization = (num_kv_heads, head_dim)
-                elif child_name == "o_proj":
-                    input_factorization = (num_heads, head_dim)
+                if factorize_by_head:
+                    if child_name == "q_proj":
+                        output_factorization = (num_heads, head_dim)
+                    elif child_name in ("k_proj", "v_proj"):
+                        output_factorization = (num_kv_heads, head_dim)
+                    elif child_name == "o_proj":
+                        layer_input_factorization = (num_heads, head_dim)
+                # For the user-facing "head" sentinel under output_one_block,
+                # the input side gets split into (n_heads_in, head_dim) where
+                # n_heads_in depends on the module:
+                #   q_proj, o_proj : input is hidden_size = num_attention_heads*head_dim
+                #   k_proj, v_proj : input is hidden_size = num_attention_heads*head_dim
+                # All four therefore use (num_attention_heads, head_dim) when
+                # din == num_attention_heads * head_dim. The mlp modules have
+                # no head structure on their input side, so head_input remains
+                # None and the resolver falls back to closest.
+                if child_name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                    if linear.in_features == num_heads * head_dim:
+                        head_input_for_module = (num_heads, head_dim)
+
+        if parsed_input_factorization is not None:
+            resolved = _resolve_input_factorization_for_module(
+                parsed_input_factorization,
+                child_name,
+                in_features=linear.in_features,
+                head_factorization=head_input_for_module,
+            )
+            if resolved == "closest":
+                layer_input_factorization = None  # let BTTLayer fall back to closest pair
+            elif resolved == "head":
+                if head_input_for_module is not None:
+                    layer_input_factorization = head_input_for_module
+                else:
+                    layer_input_factorization = None
+            elif resolved is not None:
+                layer_input_factorization = resolved
 
         btt_layer = BTTLayer(
             in_features=linear.in_features,
@@ -340,7 +503,7 @@ def convert_linear_to_btt(
             decomp_mode=layer_decomp_mode,
             init_mode=init_mode,
             output_factorization=output_factorization,
-            input_factorization=input_factorization,
+            input_factorization=layer_input_factorization,
         ).to(device=linear.weight.device, dtype=linear.weight.dtype)
 
         btt_layer.init_from_linear_weight(
@@ -1221,6 +1384,7 @@ def convert_and_quantize_linear_to_qbtt_streaming(
     convert_mode="svd",
     init_mode="default",
     progress_every=10,
+    input_factorization=None,
 ):
     """Layer-streaming BTT + NF4 quantization, designed to fit Llama-3-70B
     + qfura on a single H100.
@@ -1265,6 +1429,7 @@ def convert_and_quantize_linear_to_qbtt_streaming(
 
     target_set = set(target_modules)
     convert_mode = normalize_blocktt_convert_mode(convert_mode)
+    parsed_input_factorization = _parse_input_factorization_arg(input_factorization)
 
     # Snapshot the list of modules first (we mutate the tree as we go).
     modules_to_replace = []
@@ -1296,24 +1461,45 @@ def convert_and_quantize_linear_to_qbtt_streaming(
 
         # Optional per-head factorization (matches non-streaming path).
         output_factorization = None
-        input_factorization = None
-        if factorize_by_head:
-            cfg = getattr(model, "config", None)
-            if cfg is not None:
-                num_heads = getattr(cfg, "num_attention_heads", None)
-                num_kv_heads = getattr(cfg, "num_key_value_heads", num_heads)
-                head_dim = getattr(cfg, "head_dim", None)
-                if head_dim is None and num_heads is not None:
-                    hidden_size = getattr(cfg, "hidden_size", None)
-                    if hidden_size is not None:
-                        head_dim = hidden_size // num_heads
-                if num_heads is not None and head_dim is not None:
+        layer_input_factorization = None
+        head_input_for_module = None
+        cfg = getattr(model, "config", None)
+        if cfg is not None:
+            num_heads = getattr(cfg, "num_attention_heads", None)
+            num_kv_heads = getattr(cfg, "num_key_value_heads", num_heads)
+            head_dim = getattr(cfg, "head_dim", None)
+            if head_dim is None and num_heads is not None:
+                hidden_size = getattr(cfg, "hidden_size", None)
+                if hidden_size is not None:
+                    head_dim = hidden_size // num_heads
+            if num_heads is not None and head_dim is not None:
+                if factorize_by_head:
                     if leaf == "q_proj":
                         output_factorization = (num_heads, head_dim)
                     elif leaf in ("k_proj", "v_proj"):
                         output_factorization = (num_kv_heads, head_dim)
                     elif leaf == "o_proj":
-                        input_factorization = (num_heads, head_dim)
+                        layer_input_factorization = (num_heads, head_dim)
+                if leaf in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                    if linear.in_features == num_heads * head_dim:
+                        head_input_for_module = (num_heads, head_dim)
+
+        if parsed_input_factorization is not None:
+            resolved = _resolve_input_factorization_for_module(
+                parsed_input_factorization,
+                leaf,
+                in_features=linear.in_features,
+                head_factorization=head_input_for_module,
+            )
+            if resolved == "closest":
+                layer_input_factorization = None
+            elif resolved == "head":
+                if head_input_for_module is not None:
+                    layer_input_factorization = head_input_for_module
+                else:
+                    layer_input_factorization = None
+            elif resolved is not None:
+                layer_input_factorization = resolved
 
         # 1. Stage source weight on CUDA.
         src_weight = linear.weight.data.to(device=cuda_device, non_blocking=False)
@@ -1331,7 +1517,7 @@ def convert_and_quantize_linear_to_qbtt_streaming(
             decomp_mode=layer_decomp_mode,
             init_mode=init_mode,
             output_factorization=output_factorization,
-            input_factorization=input_factorization,
+            input_factorization=layer_input_factorization,
         ).to(device=cuda_device, dtype=src_weight.dtype)
         btt_layer.init_from_linear_weight(
             src_weight,

@@ -1,6 +1,6 @@
 # RL Experiment Results
 
-_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 4, 5, 6 of the canonical 6-cell Qwen3-1.7B decomp×s_to grid — all 6 cells now extended-eval'd). Qwen2.5-7B blocktt-mml2048 row appended 2026-05-02 evening. Minerva eval deprecated and all Minerva numbers stripped from this doc on 2026-05-02 (means recomputed as mean-4); summary rankings updated accordingly. BlockTT ablation table (mirrored from `lift_commonsense.md`) added at the top on 2026-05-03. Unified paper table (Qwen3-1.7B + Qwen2.5-7B) added at the very top on 2026-05-03. Qwen2.5-7B Full FT row filled in on 2026-05-05 via single-H100 adamw8bit + gradient-checkpointing sweep over {8e-6, 1e-5, 3e-5, 5e-5} (winner: lr=1e-5). Base (no RL) rows filled in 2026-05-05 via offline `eval_rl.py` on the HF model IDs._
+_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 4, 5, 6 of the canonical 6-cell Qwen3-1.7B decomp×s_to grid — all 6 cells now extended-eval'd). Qwen2.5-7B blocktt-mml2048 row appended 2026-05-02 evening. Minerva eval deprecated and all Minerva numbers stripped from this doc on 2026-05-02 (means recomputed as mean-4); summary rankings updated accordingly. BlockTT ablation table (mirrored from `lift_commonsense.md`) added at the top on 2026-05-03. Unified paper table (Qwen3-1.7B + Qwen2.5-7B) added at the very top on 2026-05-03. Qwen2.5-7B Full FT row filled in on 2026-05-05 via single-H100 adamw8bit + gradient-checkpointing sweep over {8e-6, 1e-5, 3e-5, 5e-5} (winner: lr=1e-5). Base (no RL) rows filled in 2026-05-05 via offline `eval_rl.py` on the HF model IDs. 3-seed FuRA sweep (seeds 42/43/44) added 2026-05-05 evening to quantify run-to-run variance for Paper-Table headline rows._
 
 ## Paper Table
 
@@ -397,3 +397,46 @@ The lr=1e-5 winner was then re-evaluated offline on AMC23 / AIME-24 / AIME-25 vi
 3. **adamw8bit / GC overhead is unlikely to be the cause.** adamw8bit has been shown by the bitsandbytes paper to match fp32 AdamW within noise on LM fine-tuning; gradient checkpointing changes wall time but not the loss trajectory. The same lr=1e-5 with fp32 AdamW (if it could fit) would land in the same neighborhood.
 
 So full FT here is more of a feasibility demonstration for the single-H100 path than a method comparison: yes, single-GPU 7B full-FT GRPO is now possible on this codebase; no, it does not beat the PEFT methods at the 50-step horizon. A longer sweep is the obvious follow-up.
+
+## Seed Sweep (added 2026-05-05)
+
+Three-seed sweep for the **best FuRA setting** on each model, to quantify how much of the per-method gap reported in the Paper Table is real vs run-to-run sampling variance. Both settings use `output_one_block / pos_small / blocktt_rank=full / lr=1e-4 / adamw / 50 GRPO steps`:
+
+- **Qwen3-1.7B FuRA**: `s_merged_to=frozen` (the s_to-grid winner). Run name pattern: `blocktt-adamw-lr_1e-4-output_one_block-s_to_frozen-train_small[-seed_NN]`. Seed 42 is the existing `0502-164206` row; seeds 43, 44 launched 2026-05-05.
+- **Qwen2.5-7B FuRA**: `s_merged_to=keep_trainable` (project default; canonical Qwen2.5-7B FuRA row). Run name pattern: `blocktt-adamw-lr_1e-4-output_one_block-s_to_keep_trainable-train_small[-seed_NN]`. Seed 42 is the existing `0502-174402` row; seeds 43, 44 launched 2026-05-05.
+
+Per-seed scores (each cell is final step-50 math-verify score; AIME at avg@8, MATH-500/AMC23 greedy@1):
+
+| Model           | Dataset  | seed 42 | seed 43 | seed 44 |        Mean |   Std |
+| :-------------- | :------- | ------: | ------: | ------: | ----------: | ----: |
+| **Qwen3-1.7B** | MATH-500 |    63.6 |    61.0 |    62.8 | **62.47** |  1.33 |
+|                 | AMC23    |    57.5 |    55.0 |    55.0 | **55.83** |  1.44 |
+|                 | AIME-24  |    15.0 |    13.3 |    12.9 | **13.75** |  1.10 |
+|                 | AIME-25  |    12.5 |    13.3 |    15.4 | **13.75** |  1.50 |
+|                 | mean-4   |   37.15 |   35.67 |   36.54 | **36.45** |  0.75 |
+| **Qwen2.5-7B** | MATH-500 |    60.2 |    60.4 |    58.6 | **59.73** |  0.99 |
+|                 | AMC23    |    47.5 |    45.0 |    42.5 | **45.00** |  2.50 |
+|                 | AIME-24  |    12.5 |    10.4 |    12.5 | **11.81** |  1.20 |
+|                 | AIME-25  |     9.2 |     8.8 |     4.6 |  **7.50** |  2.54 |
+|                 | mean-4   |   32.34 |   31.14 |   29.54 | **31.01** |  1.40 |
+
+(Std is sample std across 3 seeds; n=3 so the SEM is ~0.6× std.)
+
+### Headlines
+
+1. **Per-dataset run-to-run noise is meaningful.** Single-seed std on AMC23 is 1.4 pp (Qwen3) / 2.5 pp (Qwen2.5); on AIME-25 it's 1.5 pp / 2.5 pp. AMC23 in particular is a 40-problem set so 2.5 pp = 1 problem flipping. Most "method A beats method B by 2 pp on AMC23" claims earlier in this doc are within seed noise.
+2. **Qwen3-1.7B is more stable than Qwen2.5-7B.** Mean-4 std: 0.75 pp vs 1.40 pp. The 7B run's wider variance is driven by AIME-25 (one outlier seed at 4.58% vs other two at 8.75–9.17%) and AMC23 (three different values). MATH-500 std is similar across both models (~1 pp).
+3. **Paper Table single-seed numbers were lucky for Qwen3-1.7B AIME-24 and unlucky for Qwen2.5-7B AIME-25.** Qwen3-1.7B FuRA AIME-24: 15.0 (Paper) vs 13.75 mean (−1.25 pp); Qwen2.5-7B FuRA AIME-25: 9.2 (Paper) vs 7.50 mean (−1.7 pp), but seed 44 hit only 4.58. With 3-seed means, Qwen3-1.7B FuRA still leads or ties RandLoRA on MATH-500/AMC23/AIME-24 (RandLoRA single-seed: 63.2/57.5/15.8), but the AIME-25 gap (RandLoRA 17.1 single-seed vs FuRA 13.75 mean) grows; a RandLoRA seed sweep would clarify whether 17.1 is also a lucky-seed reading.
+4. **No collapsed seeds.** All 6 runs reached step 50 with positive train acc and produced reasonable evals. Seed sensitivity is in the magnitude, not in the existence of a successful run.
+5. **AIME-25 is the noisiest slice.** Both models put AIME-25 at the highest std (1.5 / 2.54 pp). MATH-500 is the most stable (1.33 / 0.99 pp).
+
+### Cross-reference: Paper Table updates that this implies
+
+The Paper Table at the top of this doc currently reports single-seed (seed=42) numbers. Recommended interpretive overlay:
+
+- Qwen3-1.7B FuRA single-seed Paper-Table row uses on-disk seed-42 values for MATH-500/AMC23/AIME-24 (63.6/57.5/15.0) and an unrelated `lr=8e-5` run for AIME-25 (17.5 — substantially higher than this seed sweep's mean 13.75). The Paper Table mixes different runs across columns; a future cleanup should pick a single canonical row.
+- Qwen2.5-7B FuRA Paper-Table AMC23 cell shows **57.5**, but the on-disk seed-42 value is **47.5** (typo or stale value carried over from the Qwen3-1.7B row immediately above). The 3-seed mean is 45.0 ± 2.5, consistent with the on-disk 47.5 — the Paper Table 57.5 cell appears to be a transcription error.
+
+A cleanup pass that (a) replaces single-seed Paper-Table cells with mean ± std for the rows that have been seed-swept and (b) fixes the AMC23 typo would tighten the table's claims, but is left for a separate edit since changing the headline numbers materially shifts the PEFT-vs-FuRA comparison.
+
+Source files: `/data/yequan/fura/rl_runs/{Qwen3-1.7B,Qwen2.5-7B}/blocktt/blocktt-adamw-lr_1e-4-output_one_block-*-seed_4{3,4}-*/step=50/eval_results.json`. Chain log: `logs/chain_gpu3_seed_sweep.out`.
