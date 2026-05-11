@@ -487,6 +487,50 @@ def materialize_calibrated_btt_to_linear(model: nn.Module) -> nn.Module:
     return model
 
 
+@torch.no_grad()
+def materialize_svd_to_linear(model: nn.Module) -> nn.Module:
+    """In-place: replace every SVDCompressedLinear in `model` with an
+    nn.Linear whose weight is the dense product `(V_r @ U_r).T`. Mirrors
+    `materialize_calibrated_btt_to_linear` but for the SVD calib path.
+
+    The factored forward in SVDCompressedLinear is `(x @ V_r) @ U_r + b`,
+    which equals `x @ (V_r @ U_r) + b`. The standard nn.Linear computes
+    `x @ W.T + b`, so the materialized weight is `(V_r @ U_r).T`.
+
+    Trade-off: the materialized checkpoint is dense (same on-disk size as
+    the uncompressed base model). This is intentional: it lets eval_math.sh
+    load the model as a vanilla HF checkpoint with no custom modules. The
+    *training* still happened on the low-rank manifold, which is the
+    experimental quantity of interest.
+    """
+    from compress.svd.svd_linear import SVDCompressedLinear
+
+    replacements = [(n, m) for n, m in model.named_modules()
+                    if isinstance(m, SVDCompressedLinear)]
+    for name, svd in replacements:
+        # V_r: (d_in, rank), U_r: (rank, d_out)
+        # Dense weight for nn.Linear is (d_out, d_in) = (V_r @ U_r).T
+        dense_weight = (svd.V_r @ svd.U_r).t().contiguous()
+        d_out, d_in = dense_weight.shape
+        linear = nn.Linear(
+            d_in,
+            d_out,
+            bias=svd.bias is not None,
+            device=dense_weight.device,
+            dtype=dense_weight.dtype,
+        )
+        linear.weight.data.copy_(dense_weight)
+        if svd.bias is not None:
+            linear.bias.data.copy_(svd.bias.data)
+
+        parts = name.split(".")
+        parent = model
+        for p in parts[:-1]:
+            parent = getattr(parent, p)
+        setattr(parent, parts[-1], linear)
+    return model
+
+
 def save_calibrated_btt_checkpoint(model, out_dir: str, tokenizer=None) -> None:
     """LIFT legacy HF format: materialize BTTLinear -> nn.Linear, then write
     exactly `pytorch_model.bin` + `config.json`. Byte-for-byte identical
