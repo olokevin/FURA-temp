@@ -118,8 +118,10 @@ def validate_calibrated_btt_args(args, *, argv: Sequence[str], hyphen_style: boo
     calib_mode = getattr(args, "calib_mode", "none")
     calib_source = getattr(args, "calib_source", "c4")
 
-    # 1. --calib-mode != none requires --train-mode blocktt (if parser has train_mode)
-    if calib_mode != "none" and hasattr(args, "train_mode"):
+    # 1. BTT calib modes require --train-mode blocktt; SVD calib modes are
+    #    applied inside full-FT scripts so they have no train_mode constraint.
+    if calib_mode != "none" and not calib_mode.startswith("svd_") \
+            and hasattr(args, "train_mode"):
         if args.train_mode != "blocktt":
             raise ValueError(
                 "--calib-mode only valid with --train-mode blocktt "
@@ -133,8 +135,8 @@ def validate_calibrated_btt_args(args, *, argv: Sequence[str], hyphen_style: boo
             flag = "--calib-traces-path" if hyphen_style else "--calib_traces_path"
             raise ValueError(f"{flag} must be set when --calib-source=traces")
 
-    # 3. Integer --blocktt-rank rejected on calibrated path; float must be in (0, 1]
-    if calib_mode != "none":
+    # 3. Integer --blocktt-rank rejected on the BTT calibrated path; float must be in (0, 1]
+    if calib_mode != "none" and not calib_mode.startswith("svd_"):
         rank_raw = getattr(args, "blocktt_rank", "full")
         if isinstance(rank_raw, str):
             if rank_raw != "full":

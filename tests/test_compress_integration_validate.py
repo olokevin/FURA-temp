@@ -101,6 +101,30 @@ class TestValidate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"\(0, 1\]"):
             ci.validate_calibrated_btt_args(args, argv=argv)
 
+    def test_validate_svd_v2_allows_non_blocktt_train_mode(self):
+        # SVD calib modes are used with --train-mode full (or absent). The
+        # validator must not reject them.
+        ns = argparse.Namespace(
+            calib_mode="svd_v2",
+            calib_source="training_data",
+            calib_traces_path=None,
+            blocktt_rank="full",
+            train_mode="full",
+            compression_ratio=0.5,
+        )
+        ci.validate_calibrated_btt_args(ns, argv=[])
+
+    def test_validate_svd_v2_combined_allows_non_blocktt(self):
+        ns = argparse.Namespace(
+            calib_mode="svd_v2_combined",
+            calib_source="training_data",
+            calib_traces_path=None,
+            blocktt_rank="full",
+            train_mode="full",
+            compression_ratio=0.3,
+        )
+        ci.validate_calibrated_btt_args(ns, argv=[])
+
 
 if __name__ == "__main__":
     unittest.main()
