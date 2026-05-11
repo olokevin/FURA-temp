@@ -1,0 +1,3 @@
+full-lr_1e-5-1ep-seed_43
+full-lr_3e-5-1ep-seed_43
+full-lr_5e-5-1ep-seed_43

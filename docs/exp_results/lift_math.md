@@ -76,35 +76,35 @@ Single model, fine-tuned on Math-10K, evaluated on **both** the 7 arithmetic tas
 
 Math (in-domain):
 
-| Method  | Run config                                                                       |      MultiArith |           GSM8K |          AddSub |            AQuA |        SingleEQ |           SVAMP |           MAWPS | Math Avg |
-| ------- | -------------------------------------------------------------------------------- | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | -------: |
-| full    | `lr_1e-5 + projE (seed 43, last)`                                              |           99.17 |           71.19 |           91.14 |           28.35 |           95.67 |           80.10 |           92.86 |    79.78 |
-| blocktt | `lr_2e-4 + output_one_block + pos_small + smerge_trainable (seed 43)`          |           99.50 |           71.87 |           93.16 |           27.56 |           97.64 |           79.00 | **94.54** | **80.47** |
-| lora    | `lr_1e-4 + rank_64 + alpha_128 (seed 43, last)`                                | **100.00** |           69.83 |           93.16 |           25.20 | **98.03** | **80.00** |           93.28 |    79.93 |
-| lora    | `lr_2e-4 + rank_128 + alpha_256 (seed 43)`                                     |           99.67 |           63.99 | **94.94** |           27.17 |           97.83 |           76.50 |           91.18 |    78.75 |
-| svd     | `lr_1e-5 + pos_output + smerge_frozen + type_all (seed 43, last)`              |           98.67 | **71.95** |           91.90 |           27.17 |           95.28 |           78.00 |           91.18 |    79.16 |
+| Method  | Run config                                                              |       MultiArith |           GSM8K |          AddSub |  AQuA |        SingleEQ |           SVAMP |           MAWPS |        Math Avg |
+| ------- | ----------------------------------------------------------------------- | ---------------: | --------------: | --------------: | ----: | --------------: | --------------: | --------------: | --------------: |
+| full    | `lr_1e-5 + projE (seed 43, last)`                                     |            99.17 |           71.19 |           91.14 | 28.35 |           95.67 |           80.10 |           92.86 |           79.78 |
+| blocktt | `lr_2e-4 + output_one_block + pos_small + smerge_trainable (seed 43)` |            99.50 |           71.87 |           93.16 | 27.56 |           97.64 |           79.00 | **94.54** | **80.47** |
+| lora    | `lr_1e-4 + rank_64 + alpha_128 (seed 43, last)`                       | **100.00** |           69.83 |           93.16 | 25.20 | **98.03** | **80.00** |           93.28 |           79.93 |
+| lora    | `lr_2e-4 + rank_128 + alpha_256 (seed 43)`                            |            99.67 |           63.99 | **94.94** | 27.17 |           97.83 |           76.50 |           91.18 |           78.75 |
+| svd     | `lr_1e-5 + pos_output + smerge_frozen + type_all (seed 43, last)`     |            98.67 | **71.95** |           91.90 | 27.17 |           95.28 |           78.00 |           91.18 |           79.16 |
 
 Commonsense (out-of-domain, source-domain forgetting probe):
 
-| Method  | Run config                                                                       |           BoolQ |            PIQA |            SIQA |   ARC-Challenge |        ARC-Easy |            OBQA |       HellaSwag |      Winogrande | CS Avg |
-| ------- | -------------------------------------------------------------------------------- | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | --------------: | -----: |
-| full    | `lr_1e-5 + projE (seed 43, last)`                                              |           50.3 | **71.5** |            48.5 |            39.8 |            42.8 |            28.8 |            25.4 |            17.8 |  40.61 |
-| blocktt | `lr_2e-4 + output_one_block + pos_small + smerge_trainable (seed 43)`          | **57.1** |            67.0 |            42.9 |            48.9 |            55.3 |            36.4 |            18.3 | **38.0** |  45.49 |
-| lora    | `lr_1e-4 + rank_64 + alpha_128 (seed 43, last)`                                |           55.2 |            65.0 |            36.0 |            47.6 |            55.9 | **47.8** |            22.4 |            21.7 |  43.95 |
-| lora    | `lr_2e-4 + rank_128 + alpha_256 (seed 43)`                                     |           52.5 |            51.3 |            28.2 |            29.7 |            43.0 |            35.6 |            21.8 |            23.0 |  35.64 |
-| svd     | `lr_1e-5 + pos_output + smerge_frozen + type_all (seed 43, last)`              |           50.3 |            70.2 | **54.8** | **54.8** | **61.4** |            42.4 | **26.5** |            21.2 | **47.70** |
+| Method  | Run config                                                              |          BoolQ |           PIQA |           SIQA |  ARC-Challenge |       ARC-Easy |           OBQA |      HellaSwag |     Winogrande |          CS Avg |
+| ------- | ----------------------------------------------------------------------- | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | -------------: | --------------: |
+| full    | `lr_1e-5 + projE (seed 43, last)`                                     |           50.3 | **71.5** |           48.5 |           39.8 |           42.8 |           28.8 |           25.4 |           17.8 |           40.61 |
+| blocktt | `lr_2e-4 + output_one_block + pos_small + smerge_trainable (seed 43)` | **57.1** |           67.0 |           42.9 |           48.9 |           55.3 |           36.4 |           18.3 | **38.0** |           45.49 |
+| lora    | `lr_1e-4 + rank_64 + alpha_128 (seed 43, last)`                       |           55.2 |           65.0 |           36.0 |           47.6 |           55.9 | **47.8** |           22.4 |           21.7 |           43.95 |
+| lora    | `lr_2e-4 + rank_128 + alpha_256 (seed 43)`                            |           52.5 |           51.3 |           28.2 |           29.7 |           43.0 |           35.6 |           21.8 |           23.0 |           35.64 |
+| svd     | `lr_1e-5 + pos_output + smerge_frozen + type_all (seed 43, last)`     |           50.3 |           70.2 | **54.8** | **54.8** | **61.4** |           42.4 | **26.5** |           21.2 | **47.70** |
 
 ### Target vs source summary (GSM8K + commonsense Avg)
 
 GSM8K is the standard "did the math SFT actually take" probe; commonsense Avg is the source-domain forgetting probe.
 
-| Method  |          GSM8K (target) | Commonsense Avg (source) |  Δ vs full |
-| ------- | ----------------------: | -----------------------: | ---------: |
-| full    |                   71.19 |                    40.61 |       0.00 |
-| blocktt |                   71.87 |                    45.49 |      +4.88 |
-| lora (`lr_1e-4 + r_64`)   |          69.83 |                    43.95 |      +3.34 |
-| lora (`lr_2e-4 + r_128`)  |          63.99 |                    35.64 |      −4.97 |
-| svd     | **71.95** |        **47.70** | **+7.09** |
+| Method                     |  GSM8K (target) | Commonsense Avg (source) |      Δ vs full |
+| -------------------------- | --------------: | -----------------------: | --------------: |
+| full                       |           71.19 |                    40.61 |            0.00 |
+| blocktt                    |           71.87 |                    45.49 |           +4.88 |
+| lora (`lr_1e-4 + r_64`)  |           69.83 |                    43.95 |           +3.34 |
+| lora (`lr_2e-4 + r_128`) |           63.99 |                    35.64 |          −4.97 |
+| svd                        | **71.95** |          **47.70** | **+7.09** |
 
 Notes:
 
@@ -129,26 +129,37 @@ Per-device batch × accum is the script default: `bsz=1, accum=16` for lora; `bs
 
 #### LoRA (rank=64, α=128, 7-mod target list)
 
-| LR    | Final loss |   GSM8K |
-| ----- | ---------: | ------: |
-| 6e-5  |      0.155 | **70.81** |
-| 8e-5  |      0.135 |   69.83 |
-| 1e-4  |      0.122 |   69.83 |
-| 2e-4  |        n/a | (overwritten — see notes) |
+| LR   | Final loss |           GSM8K |
+| ---- | ---------: | --------------: |
+| 3e-5 |      0.202 |           70.20 |
+| 6e-5 |      0.155 | **70.81** |
+| 8e-5 |      0.135 |           69.83 |
+| 1e-4 |      0.122 |           69.83 |
+| 2e-4 |        n/a |           66.41 |
 
 #### BlockTT (output_one_block / pos_small / smerge_keep_trainable / rank=full, no calib)
 
-| LR    | Final loss |   GSM8K |
-| ----- | ---------: | ------: |
-| 8e-5  |      0.308 |   66.41 |
-| 1e-4  |      0.290 |   67.70 |
-| 2e-4  |      0.220 |   69.52 |
-| 3e-4  |      0.165 | **71.57** |
-| 4e-4  |      0.130 |   70.43 |
-| 6e-4  |      0.095 |   66.34 |
-| 8e-4  |      0.084 |   62.85 |
+| LR   | Final loss |           GSM8K |
+| ---- | ---------: | --------------: |
+| 8e-5 |      0.308 |           66.41 |
+| 1e-4 |      0.290 |           67.70 |
+| 2e-4 |      0.220 |           69.52 |
+| 3e-4 |      0.165 | **71.57** |
+| 4e-4 |      0.130 |           70.43 |
+| 6e-4 |      0.095 |           66.34 |
+| 8e-4 |      0.084 |           62.85 |
 
-Bold = best within method. lora `lr=1e-4` and blocktt `lr ∈ {1e-4, 2e-4}` are from prior bsz=16 runs (Apr 14–15, 2026, plus the 2026-05-04 re-eval); blocktt `lr ∈ {4e-4, 6e-4, 8e-4}` were added 2026-05-05 to map the curve past the 3e-4 peak.
+#### Full FT
+
+| LR   | Final loss |           GSM8K |
+| ---- | ---------: | --------------: |
+| 8e-6 |      0.213 |           70.72 |
+| 1e-5 |      0.176 | **71.19** |
+| 2e-5 |            |           67.70 |
+| 3e-5 |      0.064 |           64.97 |
+| 5e-5 |      0.058 |           53.60 |
+
+Bold = best within method. lora `lr ∈ {1e-4, 3e-5}` and blocktt `lr ∈ {1e-4, 2e-4}` are from prior or follow-up bsz=16 runs spanning Apr 14 – May 6, 2026; blocktt `lr ∈ {4e-4, 6e-4, 8e-4}` map the curve past the 3e-4 peak; the Full FT row spans the 2026-04-27 / 2026-05-05 / 2026-05-06 runs.
 
 ![LR sweep at bsz=16 — lora vs FuRA, final loss and GSM8K](figs/math_lr_sweep_bsz16.png)
 
@@ -158,65 +169,75 @@ Per-device bsz × accum: `1×64`, `1×256` for lora; `2×32`, `2×128` for block
 
 LR-scaling baseline differs per method: lora used the bsz=16 lr=2e-4 reference (so bsz=64 ≈ 4e-4, bsz=256 ≈ 8e-4 — but actually bsz=256 used 4e-4 in the original sweep, an under-scale); blocktt used both an early scaling around the bsz=16 lr=4e-4/8e-4 attempts (yielding 70.89 / 71.04) and a re-derived scaling from the best bsz=16 LR (3e-4 → ×2 = 6e-4 for bsz=64, ×4 = 1.2e-3 for bsz=256).
 
+Tables below show only the GSM8K-best LR per (method, bsz). Full sweep with all attempted LRs was condensed on 2026-05-06; the 2026-05-05 chain notes (blocktt bsz=64/256 with √-rule scaled LRs from best bsz=16 LR=3e-4) still apply for provenance.
+
 #### LoRA (rank=64, α=128, 7-mod target list)
 
-| Effective bsz | LR     | Final loss |   GSM8K |
-| ------------: | ------ | ---------: | ------: |
-|            64 | 2e-4   |      0.132 | **70.36** |
-|           256 | 2e-4   |      0.216 |   69.60 |
-|           256 | 4e-4   |      0.177 |   68.54 |
-|           256 | 6e-4   |      0.167 |   70.20 |
+| Effective bsz | LR   | Final loss |           GSM8K |
+| ------------: | ---- | ---------: | --------------: |
+|            16 | 6e-5 |      0.155 | **70.81** |
+|            64 | 2e-4 |      0.132 |           70.36 |
+|           256 | 6e-4 |      0.167 |           70.20 |
 
-#### BlockTT (output_one_block / pos_small / smerge_keep_trainable / rank=full, no calib)
+#### FuRA (output_one_block / pos_small / smerge_keep_trainable / rank=full, no calib)
 
-| Effective bsz | LR     | Final loss |   GSM8K |
-| ------------: | ------ | ---------: | ------: |
-|            64 | 4e-4   |      0.173 |   70.89 |
-|            64 | 6e-4   |      0.127 | **72.18** |
-|           256 | 6e-4   |      0.226 |   69.60 |
-|           256 | 8e-4   |      0.212 |   71.04 |
-|           256 | 1.2e-3 |      0.198 |   68.46 |
+| Effective bsz | LR   | Final loss |           GSM8K |
+| ------------: | ---- | ---------: | --------------: |
+|            16 | 3e-4 |      0.165 |           71.57 |
+|            64 | 6e-4 |      0.127 | **72.18** |
+|           256 | 8e-4 |      0.212 |           71.04 |
 
 #### Full FT
 
-| Effective bsz | LR     | Final loss |   GSM8K |
-| ------------: | ------ | ---------: | ------: |
-|            64 | 2e-5   |      0.135 | **72.56** |
-|           256 | 2e-5   |      0.237 |   69.07 |
-|           256 | 4e-5   |      0.191 |   68.39 |
+| Effective bsz | LR   | Final loss |           GSM8K |
+| ------------: | ---- | ---------: | --------------: |
+|            16 | 1e-5 |      0.176 |           71.19 |
+|            64 | 2e-5 |      0.135 | **72.56** |
+|           256 | 2e-5 |      0.237 |           69.07 |
 
-Bold = best within method. New rows added 2026-05-05: lora bsz=256 `lr ∈ {2e-4, 6e-4}`, blocktt bsz=256 `lr=6e-4`, and the full-FT bsz=64/256 sweep at `lr ∈ {2e-5, 4e-5}`. The blocktt bsz=64/256 entries with √-rule scaled LRs (6e-4 from best bsz=16 LR=3e-4, 1.2e-3 = ×4) come from the earlier 2026-05-05 chain.
+Bold = best within method.
 
 ![Batch-size sweep — full FT, lora, FuRA, best LR per (method, bsz)](figs/math_bsz_sweep.png)
 
-The bsz curves use the gsm8k-best LR per (method, bsz). Full FT bsz=16 is `full-lr_1e-5-seed_43-projE` (71.19); lora bsz=16 is the LR-sweep best (lr=6e-5, 70.81); blocktt bsz=16 is the LR-sweep best (lr=3e-4, 71.57); bsz=64 best LRs are full=2e-5, lora=2e-4, blocktt=6e-4; bsz=256 best LRs are full=2e-5, lora=6e-4, blocktt=8e-4.
+The bsz curves use the gsm8k-best LR per (method, bsz). Full FT bsz=16 is `full-lr_1e-5-seed_43-projE` (71.19, the LR-sweep winner); lora bsz=16 is the LR-sweep best (lr=6e-5, 70.81); blocktt bsz=16 is the LR-sweep best (lr=3e-4, 71.57); bsz=64 best LRs are full=2e-5, lora=2e-4, blocktt=6e-4; bsz=256 best LRs are full=2e-5, lora=6e-4, blocktt=8e-4.
 
 ### Combined view — all sweep configs
 
-| Method  | Sweep | Effective bsz | LR     |   GSM8K |
-| ------- | ----- | ------------: | ------ | ------: |
-| full    | bsz   |            64 | 2e-5   |   **72.56** 🥇 |
-| blocktt | bsz   |            64 | 6e-4   |   72.18 |
-| blocktt | LR    |            16 | 3e-4   |   71.57 |
-| blocktt | bsz   |           256 | 8e-4   |   71.04 |
-| blocktt | bsz   |            64 | 4e-4   |   70.89 |
-| lora    | LR    |            16 | 6e-5   |   70.81 |
-| blocktt | LR    |            16 | 4e-4   |   70.43 |
-| lora    | bsz   |            64 | 2e-4   |   70.36 |
-| lora    | bsz   |           256 | 6e-4   |   70.20 |
-| lora    | LR    |            16 | 8e-5   |   69.83 |
-| lora    | LR    |            16 | 1e-4   |   69.83 |
-| lora    | bsz   |           256 | 2e-4   |   69.60 |
-| blocktt | bsz   |           256 | 6e-4   |   69.60 |
-| blocktt | LR    |            16 | 2e-4   |   69.52 |
-| full    | bsz   |           256 | 2e-5   |   69.07 |
-| lora    | bsz   |           256 | 4e-4   |   68.54 |
-| blocktt | bsz   |           256 | 1.2e-3 |   68.46 |
-| full    | bsz   |           256 | 4e-5   |   68.39 |
-| blocktt | LR    |            16 | 1e-4   |   67.70 |
-| blocktt | LR    |            16 | 8e-5   |   66.41 |
-| blocktt | LR    |            16 | 6e-4   |   66.34 |
-| blocktt | LR    |            16 | 8e-4   |   62.85 |
+| Method  | Sweep | Effective bsz | LR     |              GSM8K |
+| ------- | ----- | ------------: | ------ | -----------------: |
+| full    | bsz   |            64 | 2e-5   | **72.56** 🥇 |
+| blocktt | bsz   |            64 | 6e-4   |              72.18 |
+| blocktt | LR    |            16 | 3e-4   |              71.57 |
+| full    | LR    |            16 | 1e-5   |              71.19 |
+| blocktt | bsz   |           256 | 8e-4   |              71.04 |
+| blocktt | bsz   |            64 | 4e-4   |              70.89 |
+| lora    | LR    |            16 | 6e-5   |              70.81 |
+| full    | LR    |            16 | 8e-6   |              70.72 |
+| blocktt | LR    |            16 | 4e-4   |              70.43 |
+| lora    | bsz   |            64 | 2e-4   |              70.36 |
+| lora    | LR    |            16 | 3e-5   |              70.20 |
+| lora    | bsz   |           256 | 6e-4   |              70.20 |
+| lora    | LR    |            16 | 8e-5   |              69.83 |
+| lora    | LR    |            16 | 1e-4   |              69.83 |
+| lora    | bsz   |           256 | 2e-4   |              69.60 |
+| blocktt | bsz   |           256 | 6e-4   |              69.60 |
+| blocktt | LR    |            16 | 2e-4   |              69.52 |
+| full    | bsz   |           256 | 2e-5   |              69.07 |
+| lora    | bsz   |           256 | 4e-4   |              68.54 |
+| blocktt | bsz   |           256 | 1.2e-3 |              68.46 |
+| full    | bsz   |           256 | 4e-5   |              68.39 |
+| blocktt | LR    |            16 | 1e-4   |              67.70 |
+| blocktt | LR    |            16 | 8e-5   |              66.41 |
+| blocktt | LR    |            16 | 6e-4   |              66.34 |
+| full    | LR    |            16 | 3e-5   |              64.97 |
+| blocktt | LR    |            16 | 8e-4   |              62.85 |
+| full    | LR    |            16 | 5e-5   |              53.60 |
+
+### Discussion — LR robustness and batch-size scaling
+
+Across the three methods at fixed batch size, the width of the usable LR range differs sharply. **LoRA** sits on a wide, flat plateau: across roughly an order of magnitude in LR, GSM8K barely moves, and the worst run is only modestly off the best. **FuRA** has a clear unimodal peak — there is a narrow band where it wins, but performance falls off symmetrically on both sides of that band as LR moves either down (undertrained) or up (over-aggressive cores that drive training loss low while harming reasoning generalisation). **Full FT** is the most LR-fragile of the three: a small step toward higher LR collapses the model into memorising the training distribution, sacrificing GSM8K dramatically; it works only at LRs noticeably smaller than what either parameter-efficient method tolerates, and the cliff to "broken" is steep.
+
+Batch-size scaling tells a complementary story. Stepping from the smallest effective batch up by a moderate factor improves all three methods, with full FT and FuRA gaining noticeably more than LoRA when their LR is rescaled appropriately. Pushing the batch size further (a much larger jump) reverses the trend: every method drops, full FT the most aggressively, FuRA second, LoRA the least. The breakdown at very large batch tracks the same per-method LR-sensitivity pattern — the standard square-root LR-rescaling rule keeps moving us along the LR axis, and the methods with narrower stable LR windows hit their cliff sooner. So in practice LoRA is the safest choice when LR or batch size is uncertain, FuRA gets the highest peak but only inside a tuned LR window, and full FT delivers the best peak overall but demands the most careful LR tuning and stays close to the small-batch regime.
 
 ### Notes & caveats
 

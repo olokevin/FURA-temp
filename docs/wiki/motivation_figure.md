@@ -254,3 +254,162 @@ visually consistent.
   `docs/26_nips_fura_paper/docs/motivating_example_design.md`
 - Paper inclusion: `docs/26_nips_fura_paper/neurips_2026.tex`
   (`\includegraphics{figs/motivation.pdf}` around line 199).
+
+---
+
+## 9. v8 split-figure variant (`plot_motivating_v8.py`)
+
+The v8 rewrite splits the original 2×3 motivation figure into **two
+side-by-side 1×3 figures** for the paper introduction, optimized for the LIFT
+math SFT story rather than the RL story.
+
+### 9.1 Outputs
+
+| File | Panels |
+|---|---|
+| `docs/exp_results/figs/motivating_svdft.png` (+ `_notitles.png`) | (a) Fraction in col(U) vs step; (b) S′−S, |⟨Uᵢ′,Uᵢ⟩| at L15 up_proj; (c) Full FT vs SVD FT bars (math + commonsense). |
+| `docs/exp_results/figs/motivating_fura.png` (+ `_notitles.png`) | (a) Effective-rank-of-ΔW vs layer (q_proj) for Full FT / FuRA / LoRA; (b) FuRA \|R′−R₀\| 2×2 block heatmap at L15 q_proj; (c) Full FT / LoRA / FuRA bars. |
+| `motivating_svdft_a_sweep.png`, `motivating_svdft_b_sweep.png`, `motivating_fura_a_sweep.png` | Sweep variants across layers / modules (see §9.6). |
+
+Entry points: `analysis/plot_motivating_v8.py` (main figures) and
+`analysis/plot_motivating_v8_sweeps.py` (sweeps).
+
+### 9.2 Key differences from the original
+
+- **Data source for panel (a)** comes from the *online* `proj_energy.jsonl`
+  recorder added to `ref/LIFT/src/finetune_sft.py` (see
+  [`projection_energy.md`](projection_energy.md) §4). Panel (a) plots the
+  evolution of u-proj/v-proj over training steps for L15, not a single
+  snapshot vs layer. This means a successful run must contain
+  `proj_energy.csv` next to `training.log`.
+- **No learning curves** in the v8 layout — the original (c) panel
+  (RL/SFT curve) is dropped. The new (c) is a **target-vs-source bar
+  chart**: Math-10K avg (in-domain) vs commonsense avg (out-of-domain
+  forgetting probe). Values are hand-keyed into `CONFIG["bars"]` from
+  `docs/exp_results/lift_math.md`.
+- **Color scheme**: Full FT = red `#D62728`, LoRA = grey `#9E9E9E`,
+  SVD FT / FuRA = blue `#1F77B4`. Overrides the imports from
+  `plot_motivation_figure.py` (which uses blue for Full FT).
+- **Pretrain baseline** in (c) is a dashed line over the **Source group
+  only** with a single "Pretrain baseline" legend entry — not on the
+  Target side, since the pretrained model has no math accuracy
+  in-context. Both groups share the same baseline value (41.3).
+- **Best-bar bolding**: the per-group max in (c) is bolded; other
+  numerals are regular weight. Controlled by `FONT_BAR_NUMBER` and
+  scoped to each (Target, Source) group.
+- **Block-slice heatmap** in fura (b): four evenly-spaced blocks
+  `[0, n/3, 2n/3, n-1]` shown as 2×2 square sub-heatmaps with their own
+  matrix-coord axis ticks, sharing a single log-scale colorbar **on the
+  left**. The original `motivation.png` showed the full `(n·b, m·rank)`
+  flat heatmap with white separator lines — that gets cluttered on
+  L=15 q_proj for Llama-3-8B, so the v8 figure subsets to 4 blocks.
+
+### 9.3 Caching panel (d) and (e)
+
+Effective-rank curves and BlockTT R-update tensors are precomputed and
+saved under `analysis_results/motivating_v8_cache/`. Cache keys are
+auto-derived from checkpoint dir names + module list (for panel d) or
++ (layer, module, decomp_mode) (for panel e), so editing any of those
+CONFIG knobs invalidates the relevant cache automatically. Use
+`--recompute` to force a rebuild.
+
+The `_ckpt_tag()` helper climbs one parent when the leaf is `last` /
+`best` / `step=*` so the tag identifies the run, not the sub-checkpoint
+(otherwise multiple runs collide on a `last` cache name).
+
+### 9.4 Layout knobs (lessons learned)
+
+- **Subplot title alignment across columns**: `set_title` on each axis
+  produces titles at different figure-y because each panel's content
+  (legend-above, sub-axes, colorbar) pushes the title baseline by
+  different amounts. The fix is `_render_panel_titles(fig, gs, titles,
+  y_fig)` which writes titles via `fig.text(...)` at a single
+  figure-coord y (default 0.94). All panel titles in v8 share this
+  helper. The per-axis `set_title` is reserved for sub-titles inside
+  composite panels (lower half of (b), block labels in (e)).
+- **Legend above plot vs in-plot**: Putting the legend above the axes
+  (`bbox_to_anchor=(0.5, 1.02)`) collided with the figure-coord panel
+  title even at `top=0.86`. v8 settled on **in-plot lower-right
+  legends** for the line panels (a) and (d), and bumped `top` to 0.84.
+- **Panel (a) annotations**: The "W' final = 0.9996" text exists
+  because W' ≈ 1.0 is otherwise indistinguishable from 1.0 at the
+  default y-scale. The dashed random baseline used to have an inline
+  text label ("Random baseline = 0.535") under the line; v8 final form
+  uses a legend entry "Random Matrix" instead, no inline text.
+- **No-titles variant** (`--no-titles`): produces `_notitles.png`
+  siblings for use in slides / posters where the surrounding caption
+  already explains the panels. Suppresses subplot titles, the (a)
+  annotations, and the lower (b) sub-title — but keeps per-block (e)
+  labels and axis labels.
+- **Bar value font** is controlled by a dedicated `FONT_BAR_NUMBER`
+  constant (default 16); other text scales follow the global `FONT_*`
+  block. The x-axis labels "Target" / "Source" in (c) use
+  `FONT_LABEL + 4` for readability (override happens at the
+  `set_xticklabels(..., fontsize=...)` site, not via rcParams).
+- **Colorbar on the left of (e)**: requires `cax.yaxis.set_ticks_position("left")` AND
+  `cax.yaxis.set_label_position("left")`; setting just one leaves the
+  ticks orphaned on the right.
+
+### 9.5 Bar values (hand-keyed)
+
+The (c) panels' numbers are hand-entered in `CONFIG["bars"]` because:
+1. Math eval logs live under
+   `/data/yequan/fura/lift/math/<run>/math/eval.log` per method.
+2. Commonsense eval logs are not present for every method on every
+   math run — Full FT projE has a *partial* commonsense set, and
+   SVD-FT has none. The table in `docs/exp_results/lift_math.md`
+   "Source-Domain Forgetting" is the curated source of truth. Edit the
+   bar values there → here, not the other way.
+
+Current bar values (2026-05-11):
+
+| Method | Target (Math) | Source (Commonsense) |
+|---|---:|---:|
+| Pretrained | 41.3 | 41.3 |
+| Full FT | 71.2 | 40.6 |
+| SVD FT | 72.0 | 47.70 |
+| LoRA   | 70.8 | 39.7 |
+| FuRA   | 71.6 | 45.5 |
+
+### 9.6 Sweep variants (`plot_motivating_v8_sweeps.py`)
+
+Three additional figures for appendix / supplementary use:
+
+| File | Layout |
+|---|---|
+| `motivating_svdft_a_sweep.png` | 2 rows (L15, L31) × 3 cols (gate u-proj, up u-proj, down v-proj) over training steps. No model loads — pure CSV read. |
+| `motivating_svdft_b_sweep.png` | 4 rows × 7 cols. Top 2 rows = L15 (S then U), bottom 2 rows = L31. All 7 modules across. Requires base + Full FT ckpt; 14 fp32 SVDs of 14336×4096 (~30 s on H100). |
+| `motivating_fura_a_sweep.png` | 7 subplots, one per module type. Each shows Full FT / FuRA / LoRA effective-rank curves over layers. Loaded from cache `panel_d_sweep__*_all7.npz` after first build (~22 min uncached on H100). |
+
+The all-7-modules fura sweep cache is keyed separately from the main
+`panel_d` cache (`panel_d_sweep__...` vs `panel_d__...`) since the
+shapes are different.
+
+### 9.7 Reproduce
+
+```bash
+# Main figures (titles + no-titles variants)
+bash analysis/plot_motivating_v8.sh             # uses cache after first run
+bash analysis/plot_motivating_v8.sh notitles    # _notitles siblings
+
+# Force recompute (e.g. after editing a checkpoint path in CONFIG)
+bash analysis/plot_motivating_v8.sh recompute
+
+# Sweep figures (all three)
+uv run python analysis/plot_motivating_v8_sweeps.py
+# or one at a time
+uv run python analysis/plot_motivating_v8_sweeps.py --only svdft_a
+uv run python analysis/plot_motivating_v8_sweeps.py --only svdft_b
+uv run python analysis/plot_motivating_v8_sweeps.py --only fura_a
+```
+
+### 9.8 v8 cross-references
+
+- Main script: `analysis/plot_motivating_v8.py`
+- Sweep script: `analysis/plot_motivating_v8_sweeps.py`
+- Shell wrapper: `analysis/plot_motivating_v8.sh`
+- Cache dir: `analysis_results/motivating_v8_cache/`
+- Source of bar values: `docs/exp_results/lift_math.md`
+  "Source-Domain Forgetting" + "Full Eval Sweep" tables.
+- Sister page on the underlying metrics:
+  [`projection_energy.md`](projection_energy.md).

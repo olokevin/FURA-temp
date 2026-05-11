@@ -183,8 +183,8 @@ def parse_args():
 
     # BlockTT-specific arguments
     parser.add_argument("--trainable_type", type=str, default="all",
-        choices=["all", "mlp", "attn"],
-        help="Which modules to convert to BTT: all, mlp, attn")
+        choices=["all", "mlp", "attn", "5mod_lora"],
+        help="Which modules to convert to BTT: all (7), mlp (3), attn (4), 5mod_lora (q/k/v/up/down — matches LoRA's 5-mod default)")
     parser.add_argument("--decomp_mode", type=str, default="input_one_block",
         help="BTT decomposition mode: input_one_block, output_one_block, or dict literal")
     parser.add_argument("--blocktt_rank", type=str, default="full",

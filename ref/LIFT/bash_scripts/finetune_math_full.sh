@@ -57,6 +57,7 @@ accelerate launch \
     --num_warmup_steps 0.03 \
     --seed ${seed} \
     --instruction_type single \
+    ${GRAD_CKPT:+--gradient_checkpointing} \
     --load_last_model \
     --data_path ${DATA_DIR}/ft-training_set/math_10k.json \
     --wandb_project "${wandb_project}" \

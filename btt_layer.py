@@ -535,7 +535,9 @@ def get_blocktt_target_module_names(blocktt_type):
         return ("gate_proj", "up_proj", "down_proj")
     if blocktt_type == "attn":
         return ("q_proj", "k_proj", "v_proj", "o_proj")
-    raise ValueError("blocktt_type must be one of: all, mlp, attn")
+    if blocktt_type == "5mod_lora":
+        return ("q_proj", "k_proj", "v_proj", "up_proj", "down_proj")
+    raise ValueError("blocktt_type must be one of: all, mlp, attn, 5mod_lora")
 
 
 def configure_blocktt_trainability(

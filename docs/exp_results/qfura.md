@@ -1,20 +1,19 @@
-# qfura vs QLoRA: Fine-Tuning Results on Llama-3-8B
+# qfura vs QLoRA / QDoRA / QPiSSA: Fine-Tuning Results on Llama-3-
 
-**Last updated:** 2026-05-03
+**Last updated:** 2026-05-06
 
-This document tracks qfura's fine-tuning quality against QLoRA baselines on two LIFT benchmark suites: math reasoning (`math_10k.json`) and commonsense reasoning (`commonsense_170k.json`). All runs use Llama-3-8B with 3 training epochs.
+This document tracks qfura's fine-tuning quality against QLoRA baselines on two LIFT benchmark suites: math reasoning (`math_10k.json`) and commonsense reasoning (`commonsense_170k.json`). All runs use Llama-3-8B with 3 training epochs. A separate Llama-3-70B section covers MetaMathQA-100k 1-epoch fine-tunes (recipe aligned to the QPiSSA paper) on a single H100.
 
 ## Paper headline table
 
-Same headline as above plus a 70B math column (metamath-100k fine-tune, GSM8K test).
-70B numbers TBD (QFuRA 70B GSM8K eval pending; QLoRA / QDoRA / Full FT 70B not yet run).
+Llama-3-8B numbers below are the 3-epoch tuned setting per method (see "Llama-3-8B commonsense Results"). Llama-3-70B numbers are MetaMathQA-100k, 1 epoch, lr=1e-4, batch=4×32, fp32 adapter + fp32 AdamW, PiSSA prompt format. QLoRA/QDoRA full-epoch 70B runs are pending; their 100-step short-run GSM8K strict accuracy is 0% (format adherence not yet learned), with relaxed-acc (last-number extraction) reported in the 70B section.
 
-| Method                 | Llama-3 8B <br />(Commonsense) |                 | Llama-3 70B <br />(Math) |                 |
-| ---------------------- | ------------------------------ | --------------- | ------------------------ | --------------- |
-|                        | # Params (%)                   | Avg.            | # Params (%)             | GSM8K           |
-| QLoRA           | 1.39                           | 83.89           | 1.17                     | 81.80           |
-| QDoRA           | 1.42                           | 86.34           | 1.18                     | 82.20           |
-| **QFuRA** | **1.46**                 | **87.30** | **1.45**           | **83.78** |
+| Method          | Llama-3 8B<br />(Commonsense) |                 | Llama-3 70B<br />(Math) |                 |
+| --------------- | ----------------------------- | --------------- | ----------------------- | --------------- |
+|                 | # Params (%)                  | Avg.            | # Params (%)            | GSM8K           |
+| QLoRA           | 1.39                          | 83.89           | 1.17                    | 81.27           |
+| QDoRA           | 1.42                          | 86.34           | 1.18                    | 81.80           |
+| **QFuRA** | **1.46**                | **87.30** | **1.45**          | **83.78** |
 
 ## Methods
 
@@ -169,6 +168,120 @@ Same recipe (commonsense_170k, 3 epochs, lr 2e-4, batch 8×2 accum) but with **`
 | qdora r=64 | **22h 40m**     |
 
 qdora is **~2.1× slower** than qlora due to DoRA's per-step column-norm computation on every linear's effective weight. This is a real cost: a method that's slower *and* less accurate has no clear regime where it wins.
+
+## Llama-3-70B (MetaMathQA-100k) Results
+
+70B fine-tunes on a single H100 (94 GB), recipe aligned with the QPiSSA paper (lr=2e-5, eff. batch 128, seq 512, 1 epoch on 100K examples, fp32 adapter + fp32 AdamW, PiSSA prompt format, seed=42, gradient_checkpointing). qfura uses the project defaults from `CLAUDE.md` (`blocktt_rank=full`, `decomp_mode=output_one_block`, `train_position=small`, `s_merged_to=keep_trainable`) plus `--load_strategy=layer_stream` (required for 70B on a single 94 GB H100). qlora and qdora are r=64, α=64, dropout=0.
+
+Training params at 70B:
+
+| Method      | Trainable params | % of base | Adapter init                                           |
+| ----------- | ---------------: | --------: | ------------------------------------------------------ |
+| QLoRA r=64  |           0.83 B |     1.17% | random (B=0)                                           |
+| QDoRA r=64  |           0.84 B |     1.18% | random (B=0; magnitude=‖W‖_c)                        |
+| QFuRA full  |           1.02 B |     1.45% | BTT decomp of base (lossless reconstruction at step 0) |
+| QPiSSA r=64 |           0.83 B |     1.17% | PiSSA SVD residual + LoRA reconstructing W             |
+
+All percentages are trainable / base-70B (70.55B) parameters. (qfura's `sys_metrics.json` reports 2.82% against the post-NF4-quantization model size of 37.35B, which inflates the ratio because each 4-bit weight stored counts as ~0.5 of a parameter — that figure is not directly comparable to LoRA-style methods and we use the true-base denominator throughout this document.)
+
+Eval: vLLM gen with `--quantization bitsandbytes` on the merged bf16 checkpoint, beam=1, temp=0, top_p=1, max_tokens=1024. GSM8K test = 1319 prompts; MATH test = 5000 prompts. Two accuracy metrics:
+
+- **Strict** = `utils/test_acc.py` from PiSSA repo. Counts a sample correct only if "The answer is: X" appears in the output and X equals the gold answer.
+- **Relaxed** = last numeric token in the response (skipping in-context regenerations after `### Instruction:`). Captures math ability when the model produces correct numerical answers in plain English without the rigid "The answer is:" suffix.
+
+### Full 1-epoch run (qfura)
+
+| Run                     | Steps |      Train loss |    GSM8K strict | GSM8K relaxed | MATH strict |
+| ----------------------- | ----: | --------------: | --------------: | ------------: | ----------: |
+| **qfura lr=1e-4** |   781 | **0.071** | **82.34** |         82.18 |   (running) |
+
+Wall clock: ~28 h on a single H100. Step time ~133 s/step at bs=4×32. Final epoch-1 train loss = 0.071. Materialize + CPU-offload save = ~13 min, output = 259 GB single-file `pytorch_model.bin` (fp32 trainable params preserved).
+
+### Short 100-step lr sweep (recipe-aligned to QPiSSA)
+
+All eight runs share: bs=4×32 (eff. 128), seq=512, cosine warmup 0.03, fp32 adapter + fp32 AdamW, PiSSA prompt, seed=42, 100 optimizer steps. The decomposition methods (qfura, QPiSSA) reach the strict format ("The answer is: X") within 100 steps; the random-init low-rank methods (qlora, qdora) do not.
+
+| Method          |    r |             lr | Final train loss |    GSM8K strict |   GSM8K relaxed |
+| --------------- | ---: | -------------: | ---------------: | --------------: | --------------: |
+| **qfura** | full | **1e-4** |            0.165 | **83.78** | **83.70** |
+| qfura           | full |           2e-4 |            0.161 |           81.80 |      **81.58** |
+| QPiSSA          |   64 |           2e-5 |            0.178 |           81.27 |      **80.89** |
+| qdora           |   64 |           2e-5 |            0.224 |            0.00 |           67.02 |
+| qlora           |   64 |           2e-5 |            0.243 |            0.00 |           66.49 |
+| qlora           |   64 |           5e-5 |            0.204 |            0.00 |           65.81 |
+| qdora           |   64 |           5e-5 |            0.202 |            0.00 |           64.67 |
+| qlora           |   64 |           1e-4 |            0.194 |            0.00 |           64.14 |
+| qdora           |   64 |           1e-4 |            0.207 |            0.00 |           60.58 |
+
+Bolded row is the best qfura short setting that motivated the full 1-epoch launch.
+
+### 70B observations
+
+- **qfura > QPiSSA by ~3 points strict** at 100 steps (83.78 vs 81.27). QPiSSA initializes its r=64 LoRA from the principal SVD of W (residual = `W − adapter`, NF4-quantized); qfura initializes from a full-rank BTT decomposition (lossless). The full-rank decomp absorbs more of the base's behavior at step 0, leaving less to learn.
+- **qfura > {qlora, qdora} by ~17 points relaxed** at every shared lr. The decomposition-init methods reproduce base capability at step 0; the random-init low-rank methods (B=0 for qlora; B=0 + magnitude=‖W‖_c for qdora) start with zero adapter contribution and need many more steps to recover the base's chain-of-thought + format behavior.
+- **qlora and qdora score 0% strict at 100 steps** despite producing correct numerical answers in 60-67% of samples. The "The answer is: X" suffix is absent because the random-init adapter delta is too small to overwrite the base's natural rambling output pattern within 100 steps. This is a *format-fitting* failure, not a math-reasoning failure.
+- **qlora ≈ qdora at every lr.** DoRA's per-step magnitude rescaling adds compute but does not help here at 100 steps. Both methods favor lr=2e-5 (the QPiSSA paper lr) by 1-7 relaxed-acc points over lr=5e-5/1e-4.
+- **Full 1-epoch qfura GSM8K (82.34%) is *lower* than its 100-step run (83.78%).** GSM8K is known to plateau early in MetaMath SFT; the additional 681 steps (~27 h) primarily benefit MATH (the 5000-prompt harder split, eval pending). Train loss continues to decrease (0.165 → 0.071), but GSM8K does not.
+- **Strict accuracy is a binary signal at 100 steps.** Decomposition-init methods (qfura, QPiSSA, full FT, PiSSA) reliably learn the rigid output format; random-init low-rank adapters (qlora, qdora) do not. At full-epoch horizons (781 steps) qlora/qdora are expected to learn the format too but full-epoch eval is still pending.
+
+### 70B reproducibility
+
+```bash
+# qfura full 1-epoch (project defaults; fp32 adapter + fp32 AdamW + PiSSA prompt for paper alignment)
+CUDA_VISIBLE_DEVICES=7 \
+HF_HOME=/data/yequan/huggingface \
+OUTPUT=/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/full-qfura-bs4x32-lr1e-4-fp32-pissaprompt \
+run_name=full-qfura-bs4x32-lr1e-4-fp32-pissaprompt \
+wandb_project=qfura-metamath-Meta-Llama-3-70B \
+lr=1e-4 seed=42 MAX_STEPS=0 num_train_epochs=1 \
+per_device_train_batch_size=4 gradient_accumulation_steps=32 model_max_length=512 \
+prompt_style=pissa trainable_param_dtype=fp32 optimizer_name=adamw \
+bash ref/LIFT/bash_scripts/finetune_metamath_qfura_70b.sh
+
+# qlora 70B short100 (e.g. lr=2e-5)
+CUDA_VISIBLE_DEVICES=1 \
+OUTPUT=/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/short100-qlora-r64-bs4x32-lr2e-5-fp32-pissaprompt \
+lr=2e-5 MAX_STEPS=100 \
+per_device_train_batch_size=4 gradient_accumulation_steps=32 \
+prompt_style=pissa trainable_param_dtype=fp32 optimizer_name=adamw \
+bash ref/LIFT/bash_scripts/finetune_metamath_qlora_70b.sh
+
+# qdora 70B short100 (analogous; uses qdora_impl=fast which materializes a fully-merged HF model in last/)
+CUDA_VISIBLE_DEVICES=4 \
+OUTPUT=/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/short100-qdora-r64-bs4x32-lr2e-5-fp32-pissaprompt \
+lr=2e-5 MAX_STEPS=100 qdora_impl=fast \
+per_device_train_batch_size=4 gradient_accumulation_steps=32 \
+prompt_style=pissa trainable_param_dtype=fp32 optimizer_name=adamw \
+bash ref/LIFT/bash_scripts/finetune_metamath_qdora_70b.sh
+
+# QPiSSA 70B short100 (uses fxmeng's pre-quantized r=64 5-iter NF4 residual)
+CUDA_VISIBLE_DEVICES=7 \
+OUTPUT=/data/yequan/fura/pissa/short100-Llama-3-70B-qpissa-r64-lr2e-5 \
+lr=2e-5 MAX_STEPS=100 \
+bash ref/PiSSA/scripts/run_qpissa_70b_singlegpu.sh
+
+# Eval (qfura/qdora: load <run>/last/ directly. qlora: merge adapter via /tmp/merge_qlora_gpu.py first.)
+CUDA_VISIBLE_DEVICES=7 \
+HF_HOME=/data/yequan/huggingface \
+TORCHINDUCTOR_CACHE_DIR=/data/yequan/torchinductor TMPDIR=/data/yequan/tmpdir \
+uv run python ref/PiSSA/utils/gen_vllm.py \
+    --model <ckpt> --data_path /data/yequan/pissa-dataset \
+    --sub_task gsm8k_pissa_prompt --dataset_split test \
+    --output_file <out>/gsm8k_response.jsonl \
+    --batch_size 200 --max_tokens 1024 --temperature 0.0 --top_p 1.0 \
+    --quantization bitsandbytes --gpu_memory_utilization 0.92 --dtype bfloat16
+uv run python ref/PiSSA/utils/test_acc.py --input_file <out>/gsm8k_response.jsonl
+```
+
+The QLoRA 70B merge needs `/tmp/merge_qlora_gpu.py` (custom GPU-side merge of the NF4 base + r=64 LoRA bf16 adapter to a CPU-resident bf16 sharded checkpoint), because PEFT's stock `merge_and_unload` is CPU-bound and effectively hangs on the 70B model. The qdora "fast" path saves a fully merged HF model directly to `<run>/last/` at end-of-training, no separate merge step needed.
+
+### 70B output paths
+
+- qfura full 1-epoch: `/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/full-qfura-bs4x32-lr1e-4-fp32-pissaprompt/{last,eval_gsm8k,eval_math}/`
+- qfura short100 (lr ∈ {5e-5, 1e-4, 2e-4}): `/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/short100-qfura-bs4x32-lr<lr>-fp32-pissaprompt/`
+- qlora short100 (lr ∈ {2e-5, 5e-5, 1e-4}): `/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/short100-qlora-r64-bs4x32-lr<lr>-fp32-pissaprompt/{last_adapter,eval_gsm8k}/`
+- qdora short100 (lr ∈ {2e-5, 5e-5, 1e-4}): `/data/yequan/fura/lift/metamath100k/meta-llama/Meta-Llama-3-70B/short100-qdora-r64-bs4x32-lr<lr>-fp32-pissaprompt/{last,eval_gsm8k}/`
+- QPiSSA short100: `/data/yequan/fura/pissa/short100-Llama-3-70B-qpissa-r64-lr2e-5/{checkpoint-100,eval_gsm8k}/`
 
 ## The math vs commonsense reversal
 

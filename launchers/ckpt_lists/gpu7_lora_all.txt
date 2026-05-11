@@ -1,0 +1,4 @@
+lora-lr_5e-5-rank_64-1ep-seed_43
+lora-lr_7e-5-rank_64-1ep-seed_43
+lora-lr_1e-4-rank_64-1ep-seed_43
+lora-lr_2e-4-rank_64-1ep-seed_43

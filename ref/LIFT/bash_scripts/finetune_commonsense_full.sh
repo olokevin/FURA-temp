@@ -58,7 +58,7 @@ accelerate launch \
     --max_seq_len 2048 \
     --learning_rate ${lr} \
     --weight_decay 0. \
-    --num_train_epochs 3 \
+    --num_train_epochs ${num_train_epochs:-3} \
     --mixed_precision bf16 \
     --lr_scheduler_type linear \
     --num_warmup_steps 0.03 \
@@ -68,6 +68,7 @@ accelerate launch \
     --instruction_type single \
     --val_set_size 120 \
     --eval_step 400 \
+    --load_last_model \
     --data_path ${DATA_DIR}/ft-training_set/commonsense_170k.json \
     --wandb_project "${wandb_project}" \
     --wandb_run_name "${run_name}" \

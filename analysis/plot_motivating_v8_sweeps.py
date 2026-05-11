@@ -103,11 +103,8 @@ def plot_svdft_a_sweep(csv_path: str, rect_out: int, rect_in: int,
                     label="Weight W'")
             ax.plot(steps, g, color=color_g, linewidth=2.4, alpha=0.9,
                     label="Gradient G")
-            ax.axhline(baseline, color="gray", linestyle="--", linewidth=1.6)
-            if i == 0 and j == 0:
-                ax.text(steps[-1] * 0.02, baseline - 0.03,
-                        f"Random baseline = {baseline:.3f}",
-                        fontsize=FONT_LABEL, color="black", va="top")
+            ax.axhline(baseline, color="gray", linestyle="--", linewidth=1.6,
+                       label="Random Matrix")
             ax.set_ylim(0.0, 1.10)
             if i == len(layers) - 1:
                 ax.set_xlabel("Training step", fontsize=FONT_LABEL + 2)

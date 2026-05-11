@@ -1,8 +1,50 @@
 # RL Experiment Results
 
-_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 4, 5, 6 of the canonical 6-cell Qwen3-1.7B decomp×s_to grid — all 6 cells now extended-eval'd). Qwen2.5-7B blocktt-mml2048 row appended 2026-05-02 evening. Minerva eval deprecated and all Minerva numbers stripped from this doc on 2026-05-02 (means recomputed as mean-4); summary rankings updated accordingly. BlockTT ablation table (mirrored from `lift_commonsense.md`) added at the top on 2026-05-03. Unified paper table (Qwen3-1.7B + Qwen2.5-7B) added at the very top on 2026-05-03. Qwen2.5-7B Full FT row filled in on 2026-05-05 via single-H100 adamw8bit + gradient-checkpointing sweep over {8e-6, 1e-5, 3e-5, 5e-5} (winner: lr=1e-5). Base (no RL) rows filled in 2026-05-05 via offline `eval_rl.py` on the HF model IDs. 3-seed FuRA sweep (seeds 42/43/44) added 2026-05-05 evening to quantify run-to-run variance for Paper-Table headline rows._
+_Updated 2026-04-23 after bug-fix sweep, LR exploration, and fura LR sweep. Llama-3.1-8B-Instruct sweeps appended 2026-04-27. Fura missing-cell reruns added 2026-05-02 (cells 1, 4, 5, 6 of the canonical 6-cell Qwen3-1.7B decomp×s_to grid — all 6 cells now extended-eval'd). Qwen2.5-7B blocktt-mml2048 row appended 2026-05-02 evening. Minerva eval deprecated and all Minerva numbers stripped from this doc on 2026-05-02 (means recomputed as mean-4); summary rankings updated accordingly. BlockTT ablation table (mirrored from `lift_commonsense.md`) added at the top on 2026-05-03. Unified paper table (Qwen3-1.7B + Qwen2.5-7B) added at the very top on 2026-05-03. Qwen2.5-7B Full FT row filled in on 2026-05-05 via single-H100 adamw8bit + gradient-checkpointing sweep over {8e-6, 1e-5, 3e-5, 5e-5} (winner: lr=1e-5). Base (no RL) rows filled in 2026-05-05 via offline `eval_rl.py` on the HF model IDs. 3-seed FuRA sweep (seeds 42/43/44) added 2026-05-05 evening to quantify run-to-run variance for Paper-Table headline rows. 3-seed sweep extended to all Paper-Table methods (Qwen3-1.7B: full/lora/dora/pissa/milora/randlora; Qwen2.5-7B: full/lora/dora) on 2026-05-06; averaged Paper Table and per-seed mean±std tables added at the bottom. Raw per-seed table and trimmed-n=2 DoRA reporting (excluding Qwen2.5-7B seed-43 collapse) added 2026-05-06 evening._
 
 ## Paper Table
+
+### Paper Table averaged across 3 seeds
+
+Same column conventions as the original Paper Table at the top of this doc; numbers are the per-seed mean. Within each model block, **bold** marks the column-best across that block. Rows that have a meaningful collapse seed are flagged with †.
+
+| Model                | Method      |       MATH-500 |          AMC23 |        AIME-24 |        AIME-25 |
+| :------------------- | :---------- | -------------: | -------------: | -------------: | -------------: |
+| **Qwen3-1.7B** | Base        |           52.2 |           30.0 |            5.8 |            7.5 |
+|                      | Full FT     |           61.5 |           46.7 |           13.2 |           14.6 |
+|                      | LoRA        |           59.6 |           48.3 |            9.2 |           11.1 |
+|                      | DoRA        |           62.3 |           45.0 |           13.6 |           14.7 |
+|                      | PiSSA       |           49.1 |           30.8 |            2.2 |            4.7 |
+|                      | MiLoRA      |           58.5 |           41.7 |            7.6 |           11.7 |
+|                      | RandLoRA    |           62.2 |           55.0 |           13.8 | **18.3** |
+|                      | FuRA (ours) | **62.5** | **55.8** | **13.8** |           13.8 |
+| **Qwen2.5-7B** | Base        |           48.4 |           40.0 |            5.0 |            2.9 |
+|                      | Full FT     |           58.5 | **49.2** |           11.0 |            4.9 |
+|                      | LoRA        |           58.5 |           49.2 |           11.5 |            4.3 |
+|                      | DoRA        |           59.3 |           47.5 | **12.3** |            7.5 |
+|                      | FuRA (ours) | **59.7** |           49.0 |           11.8 |  **7.5** |
+
+### Per-seed mean ± std
+
+Sample std across 3 seeds (n=3 → SEM ≈ 0.6 × std). Includes mean-4 row per method.
+
+| Model                | Method   |       MATH-500 |          AMC23 |        AIME-24 |        AIME-25 |        mean-4 |
+| :------------------- | :------- | -------------: | -------------: | -------------: | -------------: | ------------: |
+| **Qwen3-1.7B** | Full FT  |  61.53 ± 2.10 |  46.67 ± 3.82 |  13.21 ± 0.66 |  14.58 ± 1.10 | 34.00 ± 1.30 |
+|                      | LoRA     |  59.60 ± 0.92 |  48.33 ± 7.64 |   9.15 ± 2.90 |  11.10 ± 0.63 | 32.05 ± 2.59 |
+|                      | DoRA     |  62.33 ± 2.58 | 45.00 ± 10.90 |  13.60 ± 4.42 |  14.73 ± 0.24 | 33.92 ± 4.42 |
+|                      | PiSSA    |  49.07 ± 5.56 | 30.83 ± 10.10 |   2.22 ± 1.27 |   4.71 ± 4.34 | 21.71 ± 4.00 |
+|                      | MiLoRA   |  58.53 ± 0.50 |  41.67 ± 3.82 |   7.63 ± 0.86 |  11.67 ± 1.81 | 29.88 ± 1.05 |
+|                      | RandLoRA | 62.23 ± 0.58 |  55.00 ± 2.50 | 13.83 ± 1.03 | 18.30 ± 1.46 | 37.42 ± 0.94 |
+|                      | FuRA     |  62.47 ± 1.33 |  55.83 ± 1.44 |  13.75 ± 1.10 |  13.75 ± 1.50 | 36.45 ± 0.75 |
+| **Qwen2.5-7B** | Full FT  |  58.47 ± 2.53 |  49.17 ± 5.77 |  10.97 ± 2.69 |   4.87 ± 1.96 | 30.87 ± 2.36 |
+|                      | LoRA     |  58.47 ± 0.23 | 49.17 ± 10.10 |  11.52 ± 1.22 |   4.30 ± 1.47 | 30.86 ± 1.96 |
+|                      | DoRA     |  59.30 ± 0.42 |  47.50 ± 3.54 |  12.29 ± 2.67 |   7.49 ± 1.16 | 31.65 ± 1.49 |
+|                      | FuRA     |  59.73 ± 0.99 |  49.00 ± 2.50 |  11.81 ± 1.20 |   7.50 ± 2.54 | 31.01 ± 1.40 |
+
+‡ DoRA row uses **n=2** (seeds 42, 44), excluding the catastrophic seed-43 collapse. The 3-seed (n=3) values would be: MATH 40.27 ± 32.97 / AMC 31.67 ± 27.54 / AIME-24 8.19 ± 7.34 / AIME-25 4.99 ± 4.40 / mean-4 21.28 ± 17.95. Reporting n=2 because the collapse failure mode dominates the std but is a binary event (collapse-or-not) that one trimmed mean cannot characterize — accurate quantification requires ≥5 seeds.
+
+### Paper Table (seed42)
 
 Best run per method on each model, evaluated on 4 held-out math benchmarks. Within each model block, **bold** marks the column-best across that block. AIME-24/25 are avg@8 at T=0.6; MATH-500 and AMC23 are greedy@1 at T=0.0. PEFT methods use rank=64 (FuRA uses `output_one_block / pos_small / s_merged_to=keep_trainable / blocktt_rank=full`).
 
@@ -407,18 +449,18 @@ Three-seed sweep for the **best FuRA setting** on each model, to quantify how mu
 
 Per-seed scores (each cell is final step-50 math-verify score; AIME at avg@8, MATH-500/AMC23 greedy@1):
 
-| Model           | Dataset  | seed 42 | seed 43 | seed 44 |        Mean |   Std |
-| :-------------- | :------- | ------: | ------: | ------: | ----------: | ----: |
-| **Qwen3-1.7B** | MATH-500 |    63.6 |    61.0 |    62.8 | **62.47** |  1.33 |
-|                 | AMC23    |    57.5 |    55.0 |    55.0 | **55.83** |  1.44 |
-|                 | AIME-24  |    15.0 |    13.3 |    12.9 | **13.75** |  1.10 |
-|                 | AIME-25  |    12.5 |    13.3 |    15.4 | **13.75** |  1.50 |
-|                 | mean-4   |   37.15 |   35.67 |   36.54 | **36.45** |  0.75 |
-| **Qwen2.5-7B** | MATH-500 |    60.2 |    60.4 |    58.6 | **59.73** |  0.99 |
-|                 | AMC23    |    47.5 |    45.0 |    42.5 | **45.00** |  2.50 |
-|                 | AIME-24  |    12.5 |    10.4 |    12.5 | **11.81** |  1.20 |
-|                 | AIME-25  |     9.2 |     8.8 |     4.6 |  **7.50** |  2.54 |
-|                 | mean-4   |   32.34 |   31.14 |   29.54 | **31.01** |  1.40 |
+| Model                | Dataset  | seed 42 | seed 43 | seed 44 |            Mean |  Std |
+| :------------------- | :------- | ------: | ------: | ------: | --------------: | ---: |
+| **Qwen3-1.7B** | MATH-500 |    63.6 |    61.0 |    62.8 | **62.47** | 1.33 |
+|                      | AMC23    |    57.5 |    55.0 |    55.0 | **55.83** | 1.44 |
+|                      | AIME-24  |    15.0 |    13.3 |    12.9 | **13.75** | 1.10 |
+|                      | AIME-25  |    12.5 |    13.3 |    15.4 | **13.75** | 1.50 |
+|                      | mean-4   |   37.15 |   35.67 |   36.54 | **36.45** | 0.75 |
+| **Qwen2.5-7B** | MATH-500 |    60.2 |    60.4 |    58.6 | **59.73** | 0.99 |
+|                      | AMC23    |    47.5 |    45.0 |    42.5 | **45.00** | 2.50 |
+|                      | AIME-24  |    12.5 |    10.4 |    12.5 | **11.81** | 1.20 |
+|                      | AIME-25  |     9.2 |     8.8 |     4.6 |  **7.50** | 2.54 |
+|                      | mean-4   |   32.34 |   31.14 |   29.54 | **31.01** | 1.40 |
 
 (Std is sample std across 3 seeds; n=3 so the SEM is ~0.6× std.)
 
@@ -440,3 +482,79 @@ The Paper Table at the top of this doc currently reports single-seed (seed=42) n
 A cleanup pass that (a) replaces single-seed Paper-Table cells with mean ± std for the rows that have been seed-swept and (b) fixes the AMC23 typo would tighten the table's claims, but is left for a separate edit since changing the headline numbers materially shifts the PEFT-vs-FuRA comparison.
 
 Source files: `/data/yequan/fura/rl_runs/{Qwen3-1.7B,Qwen2.5-7B}/blocktt/blocktt-adamw-lr_1e-4-output_one_block-*-seed_4{3,4}-*/step=50/eval_results.json`. Chain log: `logs/chain_gpu3_seed_sweep.out`.
+
+## Paper Table Methods Seed Sweep (added 2026-05-06)
+
+Three-seed sweep ({42, 43, 44}) for the Paper-Table best-row settings of every PEFT/full method on **Qwen3-1.7B** (full, lora, dora, pissa, milora, randlora) and **Qwen2.5-7B** (full, lora, dora). For each (model, method), seed-42 is the existing canonical row from earlier in this doc; seeds 43 and 44 were launched 2026-05-05 evening on GPU 2 (Qwen3) and GPU 3 (Qwen2.5). Each new seed mirrors its seed-42 config exactly: same LR, optimizer, mbs/gacc/gpu_util, and trainable_type. 50 GRPO steps, default math-verify suite (MATH-500/AMC23/AIME-24/AIME-25; AIME at avg@8 T=0.6, others greedy@1 T=0).
+
+Two seed-44 hiccups during execution:
+
+- **Qwen2.5-7B lora seed=44** OOM'd at step 1/2 with the seed-42 recipe (`mbs=2 gacc=128 gpu_util=0.4`) — vLLM allocator nondeterminism pushed peak above 93 GB. Relaunched with the safer `mbs=1 gacc=256 gpu_util=0.25` recipe (effective batch unchanged); that run completed cleanly. The seed=44 row therefore uses a slightly different mbs but the same lr/rank/effective batch as seed-42/43.
+- **Qwen2.5-7B dora seed=43** trained healthily through step 42 (train acc 69.5%) then collapsed catastrophically over steps 43–45 (train acc 9.8% by step 50). All four math-verify scores landed near zero (MATH-500 2.2%, AMC23/AIME-24/AIME-25 all 0.0%). This is a real seed-dependent late-stage RL divergence — not a code bug — and is reported as-is below; it dominates the Qwen2.5-7B dora variance row.
+
+### Raw per-seed scores
+
+Every (model, method, seed) cell from the sweep, before any aggregation. Rows are `% accuracy` on each math-verify dataset (AIME at avg@8 T=0.6, others greedy@1 T=0). Per-row mean-4 = unweighted average across the four datasets. The `‡` annotation flags the Qwen2.5-7B DoRA seed-43 collapse (late-stage train-acc divergence, scores below random for the benchmarks).
+
+| Model                | Method   | Seed | MATH-500 | AMC23 | AIME-24 | AIME-25 | mean-4 |
+| :------------------- | :------- | :--- | -------: | ----: | ------: | ------: | -----: |
+| **Qwen3-1.7B** | Full FT  | 42   |    63.60 | 47.50 |   13.80 |   15.40 |  35.08 |
+|                      | Full FT  | 43   |    59.40 | 42.50 |   13.33 |   15.00 |  32.56 |
+|                      | Full FT  | 44   |    61.60 | 50.00 |   12.50 |   13.33 |  34.36 |
+|                      | LoRA     | 42   |    60.60 | 50.00 |   11.20 |   11.20 |  33.25 |
+|                      | LoRA     | 43   |    58.80 | 40.00 |    5.83 |   11.67 |  29.08 |
+|                      | LoRA     | 44   |    59.40 | 55.00 |   10.42 |   10.42 |  33.81 |
+|                      | DoRA     | 42   |    61.60 | 37.50 |   12.90 |   14.60 |  31.65 |
+|                      | DoRA     | 43   |    60.20 | 40.00 |    9.58 |   14.58 |  31.09 |
+|                      | DoRA     | 44   |    65.20 | 57.50 |   18.33 |   15.00 |  39.01 |
+|                      | PiSSA    | 42   |    53.40 | 42.50 |    2.50 |    3.30 |  25.43 |
+|                      | PiSSA    | 43   |    42.80 | 25.00 |    0.83 |    1.25 |  17.47 |
+|                      | PiSSA    | 44   |    51.00 | 25.00 |    3.33 |    9.58 |  22.23 |
+|                      | MiLoRA   | 42   |    59.00 | 45.00 |    7.90 |    9.60 |  30.38 |
+|                      | MiLoRA   | 43   |    58.00 | 37.50 |    6.67 |   12.50 |  28.67 |
+|                      | MiLoRA   | 44   |    58.60 | 42.50 |    8.33 |   12.92 |  30.59 |
+|                      | RandLoRA | 42   |    63.20 | 57.50 |   15.80 |   17.10 |  38.40 |
+|                      | RandLoRA | 43   |    63.20 | 52.50 |   15.00 |   15.42 |  36.53 |
+|                      | RandLoRA | 44   |    62.20 | 55.00 |   13.75 |   18.33 |  37.32 |
+|                      | FuRA     | 42   |    63.60 | 57.50 |   15.00 |   12.50 |  37.15 |
+|                      | FuRA     | 43   |    61.00 | 55.00 |   13.33 |   13.33 |  35.67 |
+|                      | FuRA     | 44   |    62.80 | 55.00 |   12.92 |   15.42 |  36.54 |
+| **Qwen2.5-7B** | Full FT  | 42   |    59.40 | 42.50 |    7.90 |    4.20 |  28.50 |
+|                      | Full FT  | 43   |    55.60 | 52.50 |   12.08 |    3.33 |  30.88 |
+|                      | Full FT  | 44   |    60.40 | 52.50 |   12.92 |    7.08 |  33.23 |
+|                      | LoRA     | 42   |    58.60 | 60.00 |   10.80 |    2.90 |  33.08 |
+|                      | LoRA     | 43   |    58.60 | 40.00 |   12.92 |    5.83 |  29.34 |
+|                      | LoRA     | 44   |    58.20 | 47.50 |   10.83 |    4.17 |  30.18 |
+|                      | DoRA     | 42   |    59.00 | 50.00 |   10.40 |    8.30 |  31.93 |
+|                      | DoRA ‡  | 43   |     2.20 |  0.00 |    0.00 |    0.00 |   0.55 |
+|                      | DoRA     | 44   |    59.60 | 45.00 |   14.17 |    6.67 |  31.36 |
+|                      | FuRA     | 42   |    60.20 | 47.50 |   12.50 |    9.17 |  32.34 |
+|                      | FuRA     | 43   |    60.40 | 45.00 |   10.42 |    8.75 |  31.14 |
+|                      | FuRA     | 44   |    58.60 | 42.50 |   12.50 |    4.58 |  29.55 |
+
+‡ Late-stage RL divergence on Qwen2.5-7B DoRA seed=43 — train acc was 69.5% at step 42, then 23.05/9.77/14.06/16.80/19.14/5.47/8.98 over steps 43–50. Hardest to debug because it's seed-dependent rather than config-dependent. Reported here so the collapse rate is visible; excluded from the n=2 mean below.
+
+‡ Qwen2.5-7B DoRA reported as the **n=2 mean over seeds {42, 44}**, excluding the catastrophic seed-43 collapse (all four datasets at 0.0–2.2% — train acc went 69.5→9.8% over steps 42–45, late-stage RL divergence). The 3-seed mean including the collapse is mean-4 21.28 (32.97 std on MATH-500 alone) — a single bad seed swings the headline by ~10 pp, so the trimmed n=2 mean is the more representative comparison number until ≥5 seeds clarify the actual collapse rate. Per-seed values appear in the raw table above.
+
+(Base rows are single-eval offline results from `eval_rl.py`, not seed-swept; the original RL training that fed any model has its own seed=42 baseline that already lives in earlier sections.)
+
+### Headlines
+
+1. **RandLoRA wins Qwen3-1.7B by mean-4** (37.42 ± 0.94), narrowly ahead of FuRA (36.45 ± 0.75). Both have the smallest mean-4 std in their model block — strongest *and* most stable.
+2. **Qwen2.5-7B is a 4-way scrum within seed noise.** Trimmed-DoRA (n=2) leads by mean-4 at 31.65 ± 1.49, then FuRA (31.01 ± 1.40), then Full FT (30.87 ± 2.36) and LoRA (30.86 ± 1.96). The four mean-4 numbers span 0.79 pp, smaller than every method's std — no method has a statistically meaningful lead on this model. Per-dataset: DoRA wins AIME-24 (12.29 vs FuRA 11.81), FuRA wins MATH-500 (59.73 vs DoRA 59.30), Full FT and LoRA tie for AMC23 (49.17 each), DoRA and FuRA tie on AIME-25 (7.49 vs 7.50).
+3. **DoRA on Qwen2.5-7B has a binary collapse risk that cannot be averaged away.** 1 of 3 seeds went all-zero (seed=43, late-stage divergence at step 42–45). Reporting the n=3 mean-4 (21.28 ± 17.95) is misleading because the variance comes from a single discrete failure event; reporting the n=2 trimmed mean (31.65 ± 1.49) hides the collapse rate. The honest number is "DoRA crashes on ≥1 of 3 seeds; conditional on success, it scores 31.65 ± 1.49." **Quantifying the actual collapse rate requires ≥5 seeds; this is the most important follow-up.** None of the other 8 (model, method) cells in the sweep produced a collapsed seed.
+4. **AMC23 noise dominates several rows.** Qwen3-1.7B DoRA AMC23 std is 10.90 pp (3 seeds: 37.5 / 40.0 / 57.5); Qwen2.5-7B LoRA AMC23 std is 10.10 pp (60.0 / 40.0 / 47.5). On a 40-problem benchmark, 1 problem flipping = 2.5 pp. Most "method A beats method B by 5 pp on AMC23" claims are within seed noise.
+5. **PiSSA is the worst Qwen3-1.7B method by every metric** (mean-4 21.71 ± 4.00). The seed-42 row (mean-4 25.43 single-seed) was already the worst; the 3-seed average makes the gap to other methods cleaner. PiSSA also has the worst AIME-24 mean across both models (2.22% — barely above random for that benchmark).
+6. **Single-seed claims that survive 3-seed averaging:**
+
+   - RandLoRA's superiority on Qwen3-1.7B (mean-4 lead is preserved and the std is the smallest, so the win is real, not lucky).
+   - Full FT vs LoRA tie on Qwen3-1.7B (single-seed Full 35.1, LoRA 30.4 — looked like 5 pp gap; 3-seed mean-4 is Full 34.00 vs LoRA 32.05, narrower).
+   - FuRA's lead on Qwen2.5-7B MATH-500 (single-seed FuRA 60.2 > LoRA 58.6 / Full 59.4 → 3-seed FuRA 59.73 > LoRA 58.47 / Full 58.47, +1.26 pp lead with std ~1 pp).
+7. **Single-seed claims that DO NOT survive 3-seed averaging:**
+
+   - Qwen3-1.7B "DoRA AIME-24 = 12.9% beats LoRA 11.2%": 3-seed DoRA 13.60 ± 4.42 vs LoRA 9.15 ± 2.90 — DoRA's lead grows in mean (3.7→4.45 pp) but the std is so large the difference is now 1σ, not significant.
+   - Qwen2.5-7B "Full FT AMC23 = 42.5% (single-seed worst)": 3-seed Full FT AMC23 49.17 ± 5.77 — lifted by seeds 43/44 hitting 52.5%, now tied with LoRA. The seed-42 single-seed reading was unlucky.
+
+### Source files
+
+Wandb runs: `qwen3-1_7B-RL` and `qwen2_5-7B-RL` projects, `*-seed_4{3,4}` and `*-seed_44-mbs1-retry` runs. Chain logs: `logs/chain_gpu2_qwen3_seed_sweep.out`, `logs/chain_gpu3_qwen2_5_seed_sweep.out`, `logs/qwen2_5_7B_lora_seed44_retry_gpu3.out`. Per-run eval JSONs at `/data/yequan/fura/rl_runs/{Qwen3-1.7B,Qwen2.5-7B}/<method>/*-seed_4{3,4}-*/step=50/eval_results.json`.

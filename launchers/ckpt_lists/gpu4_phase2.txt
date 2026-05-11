@@ -1,0 +1,3 @@
+blocktt-calib_none-lr_8e-4-decomp_output_one_block_pos_small_smerge_keep_trainable-1ep-seed_43
+full-lr_1e-5-1ep-seed_43
+full-lr_3e-5-1ep-seed_43

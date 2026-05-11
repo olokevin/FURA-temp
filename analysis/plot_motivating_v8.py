@@ -97,14 +97,14 @@ CONFIG = {
             "Pretrained": 41.3,        # shared pretrain baseline (target side)
             "Full FT": 71.2,
             "SVD FT": 72.0,
-            "LoRA": 69.8,
-            "FuRA": 71.9,
+            "LoRA": 70.8,
+            "FuRA": 71.6,
         },
         "commonsense": {
             "Pretrained": 41.3,        # shared pretrain baseline (source side)
             "Full FT": 40.6,
             "SVD FT": 47.70,
-            "LoRA": 35.6,
+            "LoRA": 39.7,
             "FuRA": 45.5,
         },
     },
@@ -123,9 +123,9 @@ CONFIG = {
 # ---------------------------------------------------------------------------
 
 FONT_BASE = 13
-FONT_LABEL = 15
+FONT_LABEL = 18
 FONT_TITLE = 20
-FONT_TICK = 12
+FONT_TICK = 16
 FONT_LEGEND = 16
 FONT_PANEL_LABEL = 17
 FONT_BAR_NUMBER = 16   # numeric labels above bars in panel (c) of each figure
@@ -264,16 +264,10 @@ def plot_panel_a(ax, csv_path: str, rect_out: int, rect_in: int,
             label="Weight W'")
     ax.plot(steps, g, color=color_g, linewidth=3, alpha=0.9,
             label="Gradient G")
-    ax.axhline(baseline, color="gray", linestyle="--", linewidth=2.5)
+    ax.axhline(baseline, color="gray", linestyle="--", linewidth=2.5,
+               label="Random Matrix")
 
     if show_annotations:
-        # Inline annotation for the random baseline (placed UNDER the dashed line).
-        ax.text(
-            steps[-1] * 0.02, baseline - 0.03,
-            f"Random baseline = {baseline:.3f}",
-            fontsize=FONT_LABEL + 5, color="black", va="top",
-        )
-
         # Annotate W's final value so it doesn't read as "1.0".
         w_final = float(w[-1])
         ax.annotate(
@@ -347,7 +341,7 @@ def plot_panel_b(ax_top, ax_bot, base_index, full_weights, full_fmt,
     # Sub-title with extra top padding so it doesn't collide with the upper subplot.
     if show_subtitle:
         ax_bot.set_title(r"Singular vector rotation $\mathbf{U}_i'$ - $\mathbf{U}_i$",
-                         fontsize=FONT_TITLE - 2, pad=8)
+                         fontsize=FONT_TITLE, pad=8)
     ax_bot.set_xlabel("Singular index i", fontsize=FONT_LABEL + 4)
     # No y-label on the lower scatter (panel-(b) lower).
     ax_bot.grid(True, alpha=0.2, linewidth=0.4)

@@ -29,7 +29,7 @@ DoRA paper Table 12 (Liu et al., 2024 — visual instruction tuning of LLaVA-1.5
 | LoRA                        | 4.61           | 79.1            | 62.9            | 47.8            | 68.4            | 58.2            | 86.4 | 66.1            | 66.9           |
 | DoRA (paper)                | 4.63           | 78.6            | 62.9            | 52.2            | 69.9            | 57.0            | 87.2 | 66.1            | 67.6           |
 | **DoRA (ours)**       | 4.63           | 78.99           | **63.02** | 53.15           | **70.05** | 57.67           | 86.0 | **66.85** | **68.0** |
-| **FuRA (ours, best)** | **1.37** | **78.74** | 62.68           | **54.43** | 67.34           | **58.13** | 86.6 | 64.50           | 67.5           |
+| **FuRA (ours, best)** | **1.37** | **78.74** | 62.68           | **54.43** | 67.34           | **58.13** | 86.6 | 64.50           | 67.6           |
 
 FuRA "best" = best per-column across our BTT lr-sweep {2e-4, 3e-4, 4e-4} (all `output_one_block`,
 small core trainable, full rank). Metrics mapped to DoRA Table 12 conventions:
