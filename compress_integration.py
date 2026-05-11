@@ -400,6 +400,40 @@ def apply_calibrated_btt(
     return model, stats
 
 
+def apply_calibrated_svd(
+    model, args, *, calib_loader, device: Optional[str] = None,
+    hyphen_style: bool = True,
+) -> nn.Module:
+    """Apply an SVD-LLM-v2 compression in-place. Used by full-FT scripts that
+    want to initialize weights on the low-rank manifold before running
+    standard supervised fine-tuning. After compression, every
+    SVDCompressedLinear's U_r/V_r factors are flipped to requires_grad=True
+    so the optimizer trains the factored weights end-to-end."""
+    cfg = build_decomposition_config(args, hyphen_style=hyphen_style, model=model)
+    if not cfg.train_mode.startswith("svd_"):
+        raise ValueError(
+            f"apply_calibrated_svd called with non-SVD train_mode={cfg.train_mode!r}; "
+            "use apply_calibrated_btt for BTT modes."
+        )
+    model = decompose_with_loader(
+        model, cfg, calib_loader=calib_loader, device=device,
+        return_trainability_stats=False,
+    )
+    # SVDCompressedLinear initialises U_r/V_r with requires_grad=False (it is
+    # used by frozen-compress callers too). For full-FT after compression we
+    # must flip them on explicitly — the model-level requires_grad_(True) call
+    # inside decompose_with_loader does cascade through Parameters, but we
+    # re-assert it here for clarity and as a guard against future changes.
+    from compress.svd.svd_linear import SVDCompressedLinear
+    for module in model.modules():
+        if isinstance(module, SVDCompressedLinear):
+            module.U_r.requires_grad = True
+            module.V_r.requires_grad = True
+            if module.bias is not None:
+                module.bias.requires_grad = True
+    return model
+
+
 @torch.no_grad()
 def materialize_calibrated_btt_weights(model) -> List[Tuple[str, torch.Tensor]]:
     """Return [(param_name, dense_tensor)] for every BTTLinear in the model.
