@@ -8,6 +8,13 @@ sys.path.insert(
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir, os.path.pardir))
 )
+# Ensure repo root (with compress_integration.py and src/compress) is importable
+_LIFT_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir, os.path.pardir))
+if _LIFT_REPO_ROOT not in sys.path:
+    sys.path.insert(0, _LIFT_REPO_ROOT)
+_LIFT_SRC = os.path.join(_LIFT_REPO_ROOT, "src")
+if os.path.isdir(_LIFT_SRC) and _LIFT_SRC not in sys.path:
+    sys.path.insert(0, _LIFT_SRC)
 
 import copy
 import torch
@@ -50,6 +57,14 @@ from utils.model_utils import (
 )
 
 from utils.data_utils import SupervisedDataset, DataCollatorForSupervisedDataset
+
+from compress_integration import (
+    add_calibrated_btt_args,
+    validate_calibrated_btt_args,
+    build_calib_loader,
+    apply_calibrated_svd,
+    materialize_svd_to_linear,
+)
 
 from tools.system_metrics import SysMon
 
@@ -537,7 +552,11 @@ def parse_args():
              "(default 0 = use --logging_steps).",
     )
 
+    add_calibrated_btt_args(parser, hyphen_style=False)
+
     args = parser.parse_args()
+
+    validate_calibrated_btt_args(args, argv=sys.argv[1:], hyphen_style=False)
 
     return args
 
@@ -691,6 +710,28 @@ def main():
             shuffle=False,
             collate_fn=DataCollatorForSupervisedDataset(tokenizer=tokenizer),
         )
+
+    # --- SVD compression hook (svd_v2 / svd_v2_combined) ---
+    if getattr(args, "calib_mode", "none").startswith("svd_"):
+        _calib_collate = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
+        _calib_loader = build_calib_loader(
+            args,
+            tokenizer=tokenizer,
+            training_dataset=train_dataset,
+            training_collate_fn=_calib_collate,
+            hyphen_style=False,
+        )
+        print(f"[svd-compress] applying calib_mode={args.calib_mode} "
+              f"compression_ratio={args.compression_ratio}")
+        model = apply_calibrated_svd(
+            model, args, calib_loader=_calib_loader,
+            device=str(accelerator.device), hyphen_style=False,
+        )
+        # Re-count trainable params after compression for SysMon (constructed later)
+        _trainable_after = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        _total_after = sum(p.numel() for p in model.parameters())
+        print(f"[svd-compress] post-compression params: "
+              f"trainable={_trainable_after}, total={_total_after}")
 
     optimizer_grouped_parameters = get_optimizer_grouped_parameters(
        args, model, args.weight_decay, args.learning_rate
@@ -932,10 +973,18 @@ def main():
                     best_model = copy.deepcopy(model.module).to("cpu")
 
         last_model = accelerator.unwrap_model(model)
+        if getattr(args, "calib_mode", "none").startswith("svd_"):
+            materialize_svd_to_linear(last_model)
+            print_rank_0("[svd-compress] materialized SVDCompressedLinear -> nn.Linear before save",
+                         args.global_rank)
         save_hf_format(last_model, tokenizer, args, sub_folder="last")
         print_rank_0(f"Saved last-step checkpoint to {os.path.join(args.output_dir, 'last')}", args.global_rank)
 
         if best_model is not None:
+            if getattr(args, "calib_mode", "none").startswith("svd_"):
+                materialize_svd_to_linear(best_model)
+                print_rank_0("[svd-compress] materialized best-model SVDCompressedLinear -> nn.Linear before save",
+                             args.global_rank)
             save_hf_format(best_model, tokenizer, args, sub_folder="best")
             print_rank_0(
                 f"Saved best-eval checkpoint to {os.path.join(args.output_dir, 'best')} "
