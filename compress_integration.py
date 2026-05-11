@@ -237,7 +237,22 @@ def build_decomposition_config(args, *, hyphen_style: bool = True, model=None) -
             f"got {calib_mode!r}"
         )
     train_mode = CALIB_MODE_TO_TRAIN_MODE[calib_mode]
-    ratio = _resolve_ratio_from_rank(getattr(args, "blocktt_rank", "full"))
+
+    if calib_mode.startswith("svd_"):
+        ratio_raw = getattr(args, "compression_ratio", 1.0)
+        try:
+            ratio = float(ratio_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"--compression-ratio must be a float; got {ratio_raw!r}"
+            ) from exc
+        if not (0.0 < ratio <= 1.0):
+            raise ValueError(
+                f"--compression-ratio must be in (0, 1] for SVD calib modes; got {ratio}"
+            )
+    else:
+        ratio = _resolve_ratio_from_rank(getattr(args, "blocktt_rank", "full"))
+
     trainable_type = getattr(args, "trainable_type", "all")
     skip_layers = _build_skip_layers(model, trainable_type)
 

@@ -170,6 +170,29 @@ class TestBuildConfig(unittest.TestCase):
             cfg = ci.build_decomposition_config(args, model=ToyModel())
             self.assertEqual(cfg.train_mode, train)
 
+    def test_svd_v2_uses_compression_ratio_arg(self):
+        args = _parse(["--calib-mode", "svd_v2", "--calib-source", "training_data",
+                       "--compression-ratio", "0.25"])
+        cfg = ci.build_decomposition_config(args, model=ToyModel())
+        self.assertEqual(cfg.train_mode, "svd_llm_v2")
+        self.assertAlmostEqual(cfg.compression_ratio, 0.25)
+
+    def test_svd_v2_ignores_blocktt_rank(self):
+        # blocktt-rank should be ignored on the SVD path; the ratio comes from
+        # --compression-ratio only.
+        args = _parse(["--calib-mode", "svd_v2_combined", "--calib-source", "training_data",
+                       "--compression-ratio", "0.6", "--blocktt-rank", "0.99"])
+        cfg = ci.build_decomposition_config(args, model=ToyModel())
+        self.assertEqual(cfg.train_mode, "svd_llm_v2_combined")
+        self.assertAlmostEqual(cfg.compression_ratio, 0.6)
+
+    def test_svd_v2_rejects_bad_ratio(self):
+        for bad in ("0", "1.5", "-0.1"):
+            args = _parse(["--calib-mode", "svd_v2", "--calib-source", "training_data",
+                           "--compression-ratio", bad])
+            with self.assertRaises(ValueError):
+                ci.build_decomposition_config(args, model=ToyModel())
+
 
 if __name__ == "__main__":
     unittest.main()
