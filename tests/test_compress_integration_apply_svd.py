@@ -33,7 +33,9 @@ class TinyModel(nn.Module):
         self.lm_head = nn.Linear(16, 32)
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
-        x = torch.randn(input_ids.shape[0], 16, device=input_ids.device,
+        # Preserve (B, T) so calibration code can shift logits over the seq dim.
+        B, T = input_ids.shape
+        x = torch.randn(B, T, 16, device=input_ids.device,
                         dtype=next(self.parameters()).dtype)
         b = self.layers[0]
         # Run all projections so calibration covariances are collected for each
@@ -43,8 +45,8 @@ class TinyModel(nn.Module):
         k = b.k_proj(x)
         v = b.v_proj(x)
         h = h + b.o_proj(q + k + v)
-        logits = self.lm_head(h)
-        loss = logits.float().sum() * 0.0  # deterministic 0-loss for backward calib
+        logits = self.lm_head(h)  # (B, T, 32)
+        loss = logits.float().mean()  # real non-zero loss keeps backward gradients stable
         return type("Out", (), {"loss": loss, "logits": logits})()
 
 
@@ -98,6 +100,26 @@ class TestApplyCalibratedSVD(unittest.TestCase):
         # lm_head is skipped, remains an nn.Linear with grad enabled
         self.assertIsInstance(out.lm_head, nn.Linear)
         self.assertTrue(out.lm_head.weight.requires_grad)
+
+    def test_apply_svd_v2_combined_replaces_nn_linear(self):
+        # svd_v2_combined collects BOTH forward (activation) and backward
+        # (gradient) covariances. The TinyModel.forward already constructs a
+        # differentiable graph from input -> logits; the zero-loss trick is
+        # documented in the loader fixture and keeps backward stable.
+        model = TinyModel()
+        args = _parse(["--calib-mode", "svd_v2_combined", "--calib-source", "training_data",
+                       "--compression-ratio", "0.5"])
+        loader = _ToyCalibLoader()
+        out = ci.apply_calibrated_svd(model, args, calib_loader=loader, device="cpu")
+
+        block = out.layers[0]
+        for name in ("gate_proj", "up_proj", "down_proj", "q_proj",
+                     "k_proj", "v_proj", "o_proj"):
+            mod = getattr(block, name)
+            self.assertIsInstance(mod, SVDCompressedLinear,
+                                  f"{name} should be SVDCompressedLinear after svd_v2_combined")
+            self.assertTrue(mod.U_r.requires_grad)
+            self.assertTrue(mod.V_r.requires_grad)
 
 
 if __name__ == "__main__":
