@@ -42,6 +42,8 @@ CALIB_MODE_TO_TRAIN_MODE = {
     "v2_bp": "btt_llm_v2_bp",
     "v2_combined": "btt_llm_v2_combined",
     "twosteps": "btt_twosteps",
+    "svd_v2": "svd_llm_v2",
+    "svd_v2_combined": "svd_llm_v2_combined",
 }
 VALID_CALIB_MODES = ("none",) + tuple(CALIB_MODE_TO_TRAIN_MODE.keys())
 VALID_CALIB_SOURCES = ("c4", "traces", "training_data")
@@ -91,6 +93,15 @@ def add_calibrated_btt_args(parser, *, hyphen_style: bool = True) -> None:
         _arg_name("calib-batch-size", hyphen_style=hyphen_style),
         type=int, default=8,
         help="Batch size used by the calibration DataLoader.",
+    )
+    parser.add_argument(
+        _arg_name("compression-ratio", hyphen_style=hyphen_style),
+        type=float, default=1.0,
+        help=(
+            "Compression ratio for SVD calib modes (svd_v2 / svd_v2_combined). "
+            "Fraction of compressible-layer params to retain. Must be in (0, 1]. "
+            "Ignored for BTT calib modes (use --blocktt-rank instead)."
+        ),
     )
 
 

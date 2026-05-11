@@ -159,6 +159,15 @@ class TestBuildConfig(unittest.TestCase):
         cfg = ci.build_decomposition_config(args, model=ToyModel())
         self.assertEqual(cfg.train_position, "both")
 
+    def test_calib_mode_to_train_mode_mapping_includes_svd(self):
+        for calib, train in [("svd_v2", "svd_llm_v2"),
+                              ("svd_v2_combined", "svd_llm_v2_combined")]:
+            args = _parse(["--calib-mode", calib, "--calib-source", "training_data",
+                           "--compression-ratio", "0.5"])
+            cfg = ci.build_decomposition_config(args, model=ToyModel())
+            self.assertEqual(cfg.train_mode, train)
+            self.assertAlmostEqual(cfg.compression_ratio, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
