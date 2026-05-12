@@ -723,6 +723,9 @@ def main():
         )
         print(f"[svd-compress] applying calib_mode={args.calib_mode} "
               f"compression_ratio={args.compression_ratio}")
+        # calibration runs a forward pass, so the model must be on the target
+        # device before accelerator.prepare() is called.
+        model = model.to(accelerator.device)
         model = apply_calibrated_svd(
             model, args, calib_loader=_calib_loader,
             device=str(accelerator.device), hyphen_style=False,
