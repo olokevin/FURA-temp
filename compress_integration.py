@@ -509,8 +509,9 @@ def materialize_svd_to_linear(model: nn.Module) -> nn.Module:
                     if isinstance(m, SVDCompressedLinear)]
     for name, svd in replacements:
         # V_r: (d_in, rank), U_r: (rank, d_out)
-        # Dense weight for nn.Linear is (d_out, d_in) = (V_r @ U_r).T
-        dense_weight = (svd.V_r @ svd.U_r).t().contiguous()
+        # Dense weight for nn.Linear is (d_out, d_in) = (V_r @ diag(svd_s) @ U_r).T
+        # when svd_s is present; otherwise (V_r @ U_r).T.
+        dense_weight = svd.materialize_dense_weight()
         d_out, d_in = dense_weight.shape
         linear = nn.Linear(
             d_in,
@@ -581,3 +582,337 @@ def load_calibrated_btt_for_eval(model, checkpoint_dir: str) -> nn.Module:
     # 'missing' is OK: topology only rebuilt BTT paths; other params may have
     # been loaded from state directly.
     return model
+
+
+# ---------------------------------------------------------------------------
+# Plain (calibration-free) BTT / SVD conversion via the compress package.
+#
+# These helpers replace the legacy `btt_layer.convert_linear_to_btt` /
+# `svd_layer.convert_linear_to_svd` entry points used by run_rl_new.py /
+# run_sft_new.py / etc. The factorization math is intentionally delegated
+# to the legacy `btt_layer.BTTLayer` / `svd_layer.SVDLayer` classes so the
+# numerical result is bit-for-bit identical with the legacy path; only the
+# resulting **module type** is swapped to `compress.btt.btt_linear.BTTLinear`
+# / `compress.svd.svd_linear.SVDCompressedLinear` so the rest of the
+# training pipeline (rollouts, checkpointing) sees a single canonical
+# module type for both plain and calibrated runs.
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def convert_linear_to_btt_compress(
+    model: nn.Module,
+    *,
+    btt_rank,
+    decomp_mode="square",
+    init_mode: str = "default",
+    skip_names: Tuple[str, ...] = ("lm_head",),
+    include_names: Optional[Sequence[str]] = None,
+    lr_act: bool = False,
+    s_merged_to: Optional[str] = None,
+    train_position: str = "small",
+    factorize_by_head: bool = False,
+    model_config=None,
+    convert_mode: str = "svd",
+    input_factorization=None,
+) -> List[str]:
+    """Replace every targeted nn.Linear in ``model`` with a
+    ``compress.btt.btt_linear.BTTLinear`` initialized from the linear's dense
+    weight.
+
+    The numerical factorization (SVD / QR / s_merged_to logic /
+    factorize_by_head shape resolution) is performed by the legacy
+    ``btt_layer.BTTLayer`` class. After ``init_from_linear_weight`` runs we
+    copy the resulting packed cores (``btt_l``, ``btt_r``, optional
+    ``btt_s``) into a freshly constructed ``BTTLinear`` and install it in
+    the parent module.
+
+    All keyword names match ``btt_layer.convert_linear_to_btt`` so callers
+    can swap implementations by changing only the import.
+    """
+    from btt_layer import (  # local import to avoid mandatory dep at module load
+        BTTLayer,
+        convert_linear_to_btt as _legacy_convert_linear_to_btt,
+    )
+
+    # Run the legacy converter first; this installs BTTLayer modules and
+    # performs the per-layer SVD/QR decomposition on CUDA.
+    converted_names = _legacy_convert_linear_to_btt(
+        model,
+        btt_rank=btt_rank,
+        decomp_mode=decomp_mode,
+        init_mode=init_mode,
+        skip_names=skip_names,
+        include_names=include_names,
+        lr_act=lr_act,
+        s_merged_to=s_merged_to,
+        train_position=train_position,
+        factorize_by_head=factorize_by_head,
+        model_config=model_config,
+        convert_mode=convert_mode,
+        input_factorization=input_factorization,
+    )
+
+    # Walk the model again and replace each BTTLayer with the equivalent
+    # compress.BTTLinear, transferring the freshly-initialized cores.
+    converted_set = set(converted_names)
+    leaf_to_full = {}
+    for name, module in model.named_modules():
+        if isinstance(module, BTTLayer):
+            leaf_to_full[name] = module
+    targets = [(name, leaf_to_full[name]) for name in leaf_to_full
+               if name in converted_set]
+
+    for full_name, btt_layer in targets:
+        btt_l = btt_layer.btt_l.detach().clone()
+        btt_r = btt_layer.btt_r.detach().clone()
+        bias = btt_layer.bias.detach().clone() if btt_layer.bias is not None else None
+        if btt_layer.btt_s is not None:
+            btt_s_param = btt_layer.btt_s
+            btt_s = btt_s_param.detach().clone()
+            btt_s_requires_grad = bool(btt_s_param.requires_grad)
+        else:
+            btt_s = None
+            btt_s_requires_grad = False
+        new_layer = BTTLinear(
+            btt_l,
+            btt_r,
+            bias=bias,
+            m=btt_layer.m,
+            a=btt_layer.a,
+            n=btt_layer.n,
+            b=btt_layer.b,
+            rank=btt_layer.rank,
+            btt_s=btt_s,
+            btt_s_requires_grad=btt_s_requires_grad,
+        ).to(device=btt_layer.btt_l.device, dtype=btt_layer.btt_l.dtype)
+        # Mirror the legacy trainability convention: requires_grad is set
+        # only by the downstream `configure_*_trainability` pass, but copy
+        # the just-initialized state across so the modules are in lock-step
+        # before any configure step runs.
+        new_layer.btt_l.requires_grad_(btt_layer.btt_l.requires_grad)
+        new_layer.btt_r.requires_grad_(btt_layer.btt_r.requires_grad)
+        if new_layer.btt_s is not None:
+            new_layer.btt_s.requires_grad_(btt_s_requires_grad)
+        if new_layer.bias is not None:
+            new_layer.bias.requires_grad_(btt_layer.bias.requires_grad)
+
+        path = full_name.split(".")
+        parent = model
+        for key in path[:-1]:
+            parent = getattr(parent, key)
+        setattr(parent, path[-1], new_layer)
+
+    return converted_names
+
+
+def configure_compress_btt_trainability(
+    model: nn.Module,
+    train_bias: bool = True,
+    train_position: str = "small",
+    train_singular_values: bool = False,
+) -> dict:
+    """Trainability configuration mirroring
+    ``btt_layer.configure_blocktt_trainability`` but for
+    ``compress.btt.btt_linear.BTTLinear`` modules."""
+    if train_position not in {"small", "large", "both"}:
+        raise ValueError("BlockTT train_position must be one of: small, large, both")
+
+    for p in model.parameters():
+        p.requires_grad = False
+
+    num_btt_layers = 0
+    tuned_left_cores = 0
+    tuned_right_cores = 0
+    tuned_biases = 0
+
+    for _, module in model.named_modules():
+        if not isinstance(module, BTTLinear):
+            continue
+        num_btt_layers += 1
+        left_size = module.btt_l.numel()
+        right_size = module.btt_r.numel()
+
+        if train_position == "both":
+            train_left, train_right = True, True
+        elif train_position == "small":
+            train_left = left_size <= right_size
+            train_right = not train_left
+        else:  # large
+            train_left = left_size >= right_size
+            train_right = not train_left
+
+        module.btt_l.requires_grad = train_left
+        module.btt_r.requires_grad = train_right
+        if module.btt_s is not None:
+            module.btt_s.requires_grad = bool(train_singular_values)
+        tuned_left_cores += int(train_left)
+        tuned_right_cores += int(train_right)
+
+        if module.bias is not None:
+            module.bias.requires_grad = train_bias
+            if train_bias:
+                tuned_biases += 1
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    trainable_param_count = sum(p.numel() for p in trainable_params)
+    total_param_count = sum(p.numel() for p in model.parameters())
+    return {
+        "num_btt_layers": num_btt_layers,
+        "tuned_left_cores": tuned_left_cores,
+        "tuned_right_cores": tuned_right_cores,
+        "tuned_biases": tuned_biases,
+        "trainable_param_count": trainable_param_count,
+        "total_param_count": total_param_count,
+        "trainable_params": trainable_params,
+    }
+
+
+@torch.no_grad()
+def convert_linear_to_svd_compress(
+    model: nn.Module,
+    *,
+    skip_names: Tuple[str, ...] = ("lm_head",),
+    include_names: Optional[Sequence[str]] = None,
+    s_merged_to: Optional[str] = None,
+    train_position: str = "output",
+) -> List[str]:
+    """Replace every targeted nn.Linear in ``model`` with a
+    ``compress.svd.svd_linear.SVDCompressedLinear`` initialized from the
+    linear's dense weight.
+
+    The numerical factorization (SVD truncation / s_merged_to splitting) is
+    performed by the legacy ``svd_layer.SVDLayer`` class. After
+    ``init_from_linear_weight`` runs we copy the resulting factors into a
+    freshly constructed ``SVDCompressedLinear`` and install it in the
+    parent module.
+    """
+    from svd_layer import (  # local import to avoid mandatory dep at module load
+        SVDLayer,
+        convert_linear_to_svd as _legacy_convert_linear_to_svd,
+    )
+    from compress.svd.svd_linear import SVDCompressedLinear
+
+    converted_names = _legacy_convert_linear_to_svd(
+        model,
+        skip_names=skip_names,
+        include_names=include_names,
+        s_merged_to=s_merged_to,
+        train_position=train_position,
+    )
+
+    converted_set = set(converted_names)
+    leaf_to_full = {
+        name: m for name, m in model.named_modules() if isinstance(m, SVDLayer)
+    }
+    targets = [(name, leaf_to_full[name]) for name in leaf_to_full
+               if name in converted_set]
+
+    for full_name, svd_layer in targets:
+        # SVDLayer parametrizes forward as `F.linear(x, svd_a @ svd_b)` =
+        # `x @ (svd_a @ svd_b).T`. SVDCompressedLinear parametrizes forward
+        # as `x @ V_r @ U_r`. To get identical forward output we set
+        #   V_r = svd_b.T,  U_r = svd_a.T
+        # so that V_r @ U_r = svd_b.T @ svd_a.T = (svd_a @ svd_b).T = W.T,
+        # and `x @ V_r @ U_r = x @ W.T` matches `F.linear(x, W)`.
+        svd_b = svd_layer.svd_b.detach().clone()
+        svd_a = svd_layer.svd_a.detach().clone()
+        V_r = svd_b.t().contiguous()
+        U_r = svd_a.t().contiguous()
+        bias = svd_layer.bias.detach().clone() if svd_layer.bias is not None else None
+        if svd_layer.svd_s is not None:
+            svd_s_param = svd_layer.svd_s
+            svd_s = svd_s_param.detach().clone()
+            svd_s_requires_grad = bool(svd_s_param.requires_grad)
+        else:
+            svd_s = None
+            svd_s_requires_grad = False
+        new_layer = SVDCompressedLinear(
+            U_r,
+            V_r,
+            bias=bias,
+            svd_s=svd_s,
+            svd_s_requires_grad=svd_s_requires_grad,
+        ).to(device=svd_a.device, dtype=svd_a.dtype)
+
+        new_layer.V_r.requires_grad_(svd_layer.svd_b.requires_grad)
+        new_layer.U_r.requires_grad_(svd_layer.svd_a.requires_grad)
+        if new_layer.svd_s is not None:
+            new_layer.svd_s.requires_grad_(svd_s_requires_grad)
+        if new_layer.bias is not None:
+            new_layer.bias.requires_grad_(svd_layer.bias.requires_grad)
+
+        path = full_name.split(".")
+        parent = model
+        for key in path[:-1]:
+            parent = getattr(parent, key)
+        setattr(parent, path[-1], new_layer)
+
+    return converted_names
+
+
+def configure_compress_svd_trainability(
+    model: nn.Module,
+    train_position: str = "output",
+    train_bias: bool = True,
+    train_embed_lm_head: bool = False,
+    train_singular_values: bool = False,
+) -> dict:
+    """Trainability configuration mirroring
+    ``svd_layer.configure_svd_trainability`` but for
+    ``compress.svd.svd_linear.SVDCompressedLinear`` modules.
+
+    Mapping legacy <-> compress parameter naming:
+      svd_a  <->  U_r   (output-side factor, shape (rank, d_out))
+      svd_b  <->  V_r   (input-side factor,  shape (d_in, rank))
+      svd_s  <->  svd_s (per-rank scale, shape (rank,))
+    """
+    from compress.svd.svd_linear import SVDCompressedLinear
+
+    if train_position not in {"output", "input", "both"}:
+        raise ValueError("SVD train_position must be one of: output, input, both")
+
+    for p in model.parameters():
+        p.requires_grad = False
+
+    num_svd_layers = 0
+    tuned_output_cores = 0
+    tuned_input_cores = 0
+    tuned_biases = 0
+
+    for _, module in model.named_modules():
+        if not isinstance(module, SVDCompressedLinear):
+            continue
+        num_svd_layers += 1
+        if train_position in {"output", "both"}:
+            module.U_r.requires_grad = True
+            tuned_output_cores += 1
+        if train_position in {"input", "both"}:
+            module.V_r.requires_grad = True
+            tuned_input_cores += 1
+        if module.svd_s is not None:
+            module.svd_s.requires_grad = bool(train_singular_values)
+        if module.bias is not None:
+            module.bias.requires_grad = train_bias
+            if train_bias:
+                tuned_biases += 1
+
+    if train_embed_lm_head:
+        for name, module in model.named_modules():
+            leaf_name = name.split(".")[-1]
+            if leaf_name in ("embed_tokens", "lm_head"):
+                for p in module.parameters():
+                    p.requires_grad = True
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    trainable_param_count = sum(p.numel() for p in trainable_params)
+    total_param_count = sum(p.numel() for p in model.parameters())
+    return {
+        "num_svd_layers": num_svd_layers,
+        "tuned_output_cores": tuned_output_cores,
+        "tuned_input_cores": tuned_input_cores,
+        "tuned_biases": tuned_biases,
+        "trainable_param_count": trainable_param_count,
+        "total_param_count": total_param_count,
+        "trainable_params": trainable_params,
+    }

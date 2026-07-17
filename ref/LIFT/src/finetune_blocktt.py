@@ -469,10 +469,22 @@ def main():
 
     best_model = None
 
+    # blocktt_rank can be 'full', an integer (legacy non-calibrated path), or
+    # a float in (0, 1] (calibrated path, where it is a compression ratio).
+    # For SysMon's `rank` metadata field, accept int strings; everything else
+    # (including 'full' and float ratios) is logged as None.
+    _rank_arg = args.blocktt_rank
+    if _rank_arg == "full":
+        _sysmon_rank = None
+    else:
+        try:
+            _sysmon_rank = int(_rank_arg)
+        except (TypeError, ValueError):
+            _sysmon_rank = None
     sysmon = SysMon(
         out_dir=args.output_dir or ".",
         method="blocktt",
-        rank=(None if args.blocktt_rank == "full" else int(args.blocktt_rank)),
+        rank=_sysmon_rank,
         base_params=sum(p.numel() for p in model.parameters()),
     )
     _base = sysmon.base_params

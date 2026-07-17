@@ -19,6 +19,7 @@ logs/
 analysis_results/
 *.pdf
 
+ref/simpleRL-reason/
 adapter_fusion/
 deberta_tune/
 mistral_tune/
