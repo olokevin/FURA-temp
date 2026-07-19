@@ -204,8 +204,32 @@ class SupervisedDataset(Dataset):
         logging.warning("Tokenizing inputs... This may take some time...")
         data_dict = preprocess(sources, targets, tokenizer)
 
-        self.input_ids = data_dict["input_ids"]
-        self.labels = data_dict["labels"]
+        input_ids = data_dict["input_ids"]
+        labels = data_dict["labels"]
+
+        # Drop degenerate examples whose labels are ALL IGNORE_INDEX (no
+        # trainable tokens). This happens when the prompt alone fills/exceeds
+        # model_max_length: after truncation every response token is cut, so
+        # `label[:source_len] = IGNORE_INDEX` masks the entire sequence and the
+        # cross-entropy loss becomes 0/0 = nan. A single such microbatch makes
+        # the accumulated-gradient step nan and the whole run never recovers.
+        kept_input_ids = []
+        kept_labels = []
+        n_dropped = 0
+        for ids, lab in zip(input_ids, labels):
+            if (lab != IGNORE_INDEX).any():
+                kept_input_ids.append(ids)
+                kept_labels.append(lab)
+            else:
+                n_dropped += 1
+        if n_dropped:
+            logging.warning(
+                f"Dropped {n_dropped}/{len(input_ids)} examples with no "
+                f"trainable tokens (prompt >= model_max_length)."
+            )
+
+        self.input_ids = kept_input_ids
+        self.labels = kept_labels
 
     def __len__(self):
         return len(self.input_ids)

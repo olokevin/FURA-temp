@@ -749,10 +749,26 @@ def main():
 
             if accelerator.sync_gradients:
                 _t0 = time.time()
-                optimizer.step()
-                if args.blocktt_normalize_after_update:
-                    unwrapped = accelerator.unwrap_model(model)
-                    normalize_trainable_blocktt_cores_(unwrapped)
+                # Clip gradients (max_grad_norm=1.0) and skip the optimizer step
+                # if the accumulated gradient is non-finite. A single microbatch
+                # with a nan/inf forward loss (occasionally produced by Mixtral
+                # in bf16) otherwise poisons the whole accumulation window's
+                # gradient; applying it once turns every trainable core to nan
+                # and the run never recovers. Clipping bounds legitimate large
+                # grads; the finite-check drops the poisoned step, not the model.
+                grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                skip_step = grad_norm is not None and not torch.isfinite(grad_norm)
+                if skip_step:
+                    print_rank_0(
+                        f"[warn] non-finite grad_norm ({grad_norm}) at step "
+                        f"{args.completed_steps}; skipping optimizer step",
+                        args.global_rank,
+                    )
+                else:
+                    optimizer.step()
+                    if args.blocktt_normalize_after_update:
+                        unwrapped = accelerator.unwrap_model(model)
+                        normalize_trainable_blocktt_cores_(unwrapped)
                 lr_scheduler.step()
                 optimizer.zero_grad()
                 if torch.cuda.is_available():

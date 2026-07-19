@@ -443,7 +443,20 @@ def main():
 
             if accelerator.sync_gradients:
                 _t0 = time.time()
-                optimizer.step()
+                # Clip gradients (max_grad_norm=1.0), and as defense-in-depth
+                # skip the optimizer step if the accumulated gradient is
+                # non-finite. The primary nan cause (all-masked microbatches) is
+                # filtered at the data layer; this guards against any residual
+                # gradient explosion without letting one bad step poison weights.
+                grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                if grad_norm is not None and not torch.isfinite(grad_norm):
+                    print_rank_0(
+                        f"[warn] non-finite grad_norm ({grad_norm}) at step "
+                        f"{args.completed_steps}; skipping optimizer step",
+                        args.global_rank,
+                    )
+                else:
+                    optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
                 if torch.cuda.is_available():
