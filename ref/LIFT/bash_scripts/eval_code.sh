@@ -103,6 +103,23 @@ cd "$PROJECT_DIR"
 [ -f "${OUT_DIR}/humaneval.jsonl" ] && rm -f "${OUT_DIR}/humaneval.jsonl"
 
 # --- 1. Generate completions on the HumanEval (python) test split via vLLM ---
+# The eval model is a full-precision (bf16) dense Mixtral-8x7B (~87 GiB) — a
+# merged qlora checkpoint or a materialized qfura checkpoint. In bf16 it does NOT
+# leave room for a KV cache on a single 95 GiB H100 (even at util 0.95 the KV
+# budget is negative), and it is what the sweep runs one-GPU-per-chain. Load it
+# 4-bit via bitsandbytes: weights drop to ~25 GiB, leaving ~50+ GiB for the KV
+# cache. This is also faithful to how both methods were trained — qlora on an NF4
+# base and qfura with an NF4-quantized frozen core — so 4-bit eval matches the
+# trained numerics better than bf16 would. Cap max_model_len (HumanEval prompts +
+# 1024-token gen are short). All three are overridable via env; set GEN_QUANT=""
+# to eval in bf16 (needs >1 GPU via CUDA_VISIBLE_DEVICES for tensor parallelism).
+GEN_QUANT="${GEN_QUANT:-bitsandbytes}"
+GEN_GPU_MEM_UTIL="${GEN_GPU_MEM_UTIL:-0.9}"
+GEN_MAX_MODEL_LEN="${GEN_MAX_MODEL_LEN:-2048}"
+gen_quant_flag=()
+if [ -n "$GEN_QUANT" ]; then
+    gen_quant_flag=(--quantization "$GEN_QUANT")
+fi
 uv run --project "$PROJECT_DIR" python "${PISSA_UTILS}/gen_vllm.py" \
     --model "$EVAL_MODEL" \
     --data_path "$DATA_ROOT" \
@@ -111,6 +128,9 @@ uv run --project "$PROJECT_DIR" python "${PISSA_UTILS}/gen_vllm.py" \
     --output_file "$RESP" \
     --temperature 0.0 \
     --max_tokens 1024 \
+    --gpu_memory_utilization "$GEN_GPU_MEM_UTIL" \
+    --max_model_len "$GEN_MAX_MODEL_LEN" \
+    "${gen_quant_flag[@]}" \
     2> >(tee "${OUT_DIR}/eval_err.log" >&2) | tee "${OUT_DIR}/eval.log"
 
 # --- 2. Post-process into evalplus humaneval.jsonl (written next to $RESP) ---
