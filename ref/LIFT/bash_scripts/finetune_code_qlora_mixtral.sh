@@ -39,6 +39,7 @@ target_modules="${target_modules:-q_proj k_proj v_proj o_proj w1 w2 w3}"
 lr="${lr:-2e-5}"
 seed="${seed:-42}"
 MAX_STEPS="${MAX_STEPS:-0}"
+snapshot_interval="${snapshot_interval:-0}"
 num_train_epochs="${num_train_epochs:-1}"
 model_max_length="${model_max_length:-512}"
 per_device_train_batch_size="${per_device_train_batch_size:-1}"
@@ -92,6 +93,7 @@ uv run --project ${PROJECT_DIR} accelerate launch \
     --optimizer ${optimizer_name} \
     --load_last_model \
     --max_steps ${MAX_STEPS} \
+    --snapshot_interval ${snapshot_interval} \
     --val_set_size 0 \
     --data_path ${DATA_PATH} \
     --wandb_project "${wandb_project}" \
