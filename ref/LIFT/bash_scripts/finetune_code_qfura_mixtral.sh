@@ -37,6 +37,7 @@ s_merged_to="${s_merged_to:-keep_trainable}"
 trainable_type="${trainable_type:-mixtral_all}"
 quant_block_layout="${quant_block_layout:-flat}"
 load_strategy="${load_strategy:-layer_stream}"
+# NOTE: pissa (not the template's lift) — matches the PiSSA recipe and the qlora arm's prompt.
 prompt_style="${prompt_style:-pissa}"
 trainable_param_dtype="${trainable_param_dtype:-bf16}"
 optimizer_name="${optimizer_name:-paged_adamw_8bit}"

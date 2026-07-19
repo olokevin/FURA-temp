@@ -73,6 +73,21 @@ if [ "$KIND" = "adapter" ]; then
     fi
     EVAL_MODEL="$MERGED_DIR"
 else
+    # QFURA dense checkpoints (materialized via save_hf_format) contain only
+    # config.json + pytorch_model.bin — no tokenizer. gen_vllm.py passes only
+    # --model to vLLM (no separate tokenizer arg), so vLLM would fail to load a
+    # tokenizer from the checkpoint dir. Stage the base model's tokenizer files
+    # into the checkpoint dir once if absent. (The adapter path above gets its
+    # tokenizer from merge_adapter.py.)
+    if [ ! -f "${MODEL_DIR}/tokenizer_config.json" ] && [ ! -f "${MODEL_DIR}/tokenizer.model" ] && [ ! -f "${MODEL_DIR}/tokenizer.json" ]; then
+        echo "[eval_code] dense checkpoint has no tokenizer; staging tokenizer from ${base_model} into ${MODEL_DIR}"
+        uv run --project "$PROJECT_DIR" python -c "
+from transformers import AutoTokenizer
+import sys
+tok = AutoTokenizer.from_pretrained(sys.argv[1])
+tok.save_pretrained(sys.argv[2])
+" "$base_model" "$MODEL_DIR"
+    fi
     EVAL_MODEL="$MODEL_DIR"
 fi
 
