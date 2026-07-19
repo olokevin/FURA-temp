@@ -279,8 +279,8 @@ def parse_args():
 
     # BlockTT-specific arguments
     parser.add_argument("--trainable_type", type=str, default="all",
-        choices=["all", "mlp", "attn"],
-        help="Which modules to convert to BTT: all, mlp, attn")
+        choices=["all", "mlp", "attn", "mixtral_all"],
+        help="Which modules to convert to BTT: all, mlp, attn, mixtral_all")
     parser.add_argument("--decomp_mode", type=str, default="output_one_block",
         help="BTT decomposition mode: input_one_block, output_one_block, or dict literal")
     parser.add_argument("--blocktt_rank", type=str, default="full",
