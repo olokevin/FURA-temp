@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 
 # Add LIFT parent to path (same pattern as other LIFT scripts)
 sys.path.insert(
@@ -221,6 +222,12 @@ def parse_args():
         "--instruction_type", type=str, choices=["single", "multi"], default="single",
     )
     parser.add_argument("--save_interval", type=int, default=500)
+    parser.add_argument(
+        "--snapshot_interval", type=int, default=0,
+        help="If > 0, every N optimizer steps write a rolling intermediate "
+             "dense checkpoint to <output_dir>/snap/ (overwriting the previous) "
+             "for an external evaluator to pick up. 0 disables (default).",
+    )
     parser.add_argument(
         "--use_flash_attn", type=str, default="False",
     )
@@ -736,6 +743,39 @@ def main():
             _base -= p.numel()
     sysmon.base_params = _base
 
+    def _write_snapshot(step):
+        # Rolling intermediate checkpoint for an external HumanEval evaluator.
+        # materialize_btt_to_linear MUTATES its model in place, so we deep-copy
+        # the unwrapped model to CPU first and never touch the live training
+        # model. Write to a temp dir, atomically rename to snap/step_<N>, then
+        # update snap/LATEST last (the evaluator only acts once LATEST advances).
+        # Older step_* dirs are removed so disk holds ~one snapshot at a time.
+        if not (accelerator.is_main_process and args.output_dir):
+            return
+        snap_root = os.path.join(args.output_dir, "snap")
+        os.makedirs(snap_root, exist_ok=True)
+        src = copy.deepcopy(accelerator.unwrap_model(model)).to("cpu")
+        materialize_btt_to_linear(src, offload_device=torch.device("cpu"))
+        tmp_dir = os.path.join(snap_root, f".tmp_step_{step}")
+        if os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        os.makedirs(tmp_dir, exist_ok=True)
+        torch.save(src.state_dict(), os.path.join(tmp_dir, "pytorch_model.bin"))
+        src.config.to_json_file(os.path.join(tmp_dir, "config.json"))
+        tokenizer.save_pretrained(tmp_dir)
+        final_dir = os.path.join(snap_root, f"step_{step}")
+        if os.path.isdir(final_dir):
+            shutil.rmtree(final_dir, ignore_errors=True)
+        os.rename(tmp_dir, final_dir)
+        # Remove any older completed snapshots to bound disk usage.
+        for name in os.listdir(snap_root):
+            if name.startswith("step_") and name != f"step_{step}":
+                shutil.rmtree(os.path.join(snap_root, name), ignore_errors=True)
+        with open(os.path.join(snap_root, "LATEST"), "w") as f:
+            f.write(str(step))
+        del src
+        print_rank_0(f"[snapshot] wrote {final_dir}", args.global_rank)
+
     def train_epoch(epoch):
         nonlocal best_model, best_eval_loss
         model.train()
@@ -778,6 +818,14 @@ def main():
                 args.completed_steps += 1
                 if args.max_steps > 0 and args.completed_steps >= args.max_steps:
                     return
+
+                if (
+                    args.snapshot_interval > 0
+                    and args.completed_steps % args.snapshot_interval == 0
+                ):
+                    accelerator.wait_for_everyone()
+                    _write_snapshot(args.completed_steps)
+                    model.train()
 
                 if (
                     args.logging_steps
