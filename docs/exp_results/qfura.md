@@ -364,3 +364,41 @@ For pre-training-state error analysis (no fine-tuning):
 - On commonsense, qfura's higher pre-training KL (0.31) does *not* hurt — qfura outperforms QLoRA by 19.9 points despite starting from a worse-conditioned initial state.
 
 Initial-state quantization error is a poor proxy for trained-state quality. The structural difference (BTT factorization vs LoRA adapter) is more important than the per-layer quantization-noise difference, and the relative benefit depends strongly on the task domain and dataset size.
+
+## Mixtral-8x7B — CodeFeedback → HumanEval (short-run LR sweep)
+
+**Added:** 2026-07-19
+
+A short learning-rate sweep of qfura vs QLoRA on the **Mixtral-8x7B-v0.1** MoE model, following the PiSSA/QPiSSA code recipe (`docs/papers/24_PiSSA-*.pdf`): fine-tune on CodeFeedback (the PiSSA-dataset `python` split) and evaluate on HumanEval. This is a *short* run intended to shake out the Mixtral pipeline and get a first LR reading, not a converged comparison.
+
+### Setup
+
+- **Model:** `mistralai/Mixtral-8x7B-v0.1`, NF4 base. MoE-aware target modules: attention `q/k/v/o_proj` + expert `w1/w2/w3` (the `block_sparse_moe.gate` router is *not* adapted). qfura uses `--trainable_type mixtral_all` (896 BTT layers = 32 × (4 attn + 8 experts × 3)); QLoRA passes the same 7 leaves via `--target_modules`.
+- **Data:** `python_8k.json` — first **8,000** examples of the CodeFeedback-100K `python` split (**~7.6%**). **485** examples whose prompt alone ≥ `max_seq_len` (512) are dropped (all-masked labels → nan loss; see Bugs below), leaving **7,515** trained.
+- **Recipe:** 1 epoch (**58 optimizer steps** at effective batch 128 = 1 × 128 grad-accum), seq len 512, AdamW, cosine schedule, warmup ratio 0.03, no weight decay. qfura keeps the project-locked defaults (`--blocktt_rank full --decomp_mode output_one_block --train_position small --s_merged_to keep_trainable`, layout `flat`, PagedAdamW8bit); QLoRA is rank 64 / alpha 64, fp32 adapter.
+- **Eval:** HumanEval via vLLM (`gen_vllm.py --sub_task python`) → `code_process.py` → `evalplus.evaluate --dataset humaneval`, greedy (temperature 0), max 1024 new tokens, all 164 problems. The dense eval checkpoint is loaded **4-bit (bitsandbytes)** with `max_model_len 2048` (see Bugs). qfura evaluates its materialized dense checkpoint; QLoRA evaluates its adapter merged into the base.
+- **Tracking:** wandb project `mixtral_mode_code`. Launchers: `finetune_code_{qlora,qfura}_mixtral.sh`; eval: `eval_code.sh`.
+
+### Results (HumanEval pass@1, greedy)
+
+| Method | LR   | HumanEval | HumanEval+ |
+| ------ | ---- | --------- | ---------- |
+| QLoRA  | 2e-5 | 51.2      | 43.3       |
+| QLoRA  | 5e-5 | 55.5      | 49.4       |
+| QLoRA  | 1e-4 | **56.1**  | 48.8       |
+| qfura  | 5e-5 | 48.2      | 38.4       |
+| qfura  | 1e-4 | 50.0      | 40.2       |
+| qfura  | 2e-4 | **50.6**  | 43.3       |
+
+Best per method in **bold**. HumanEval(+) uses evalplus's extra test cases.
+
+**Reading (short-run, one seed — treat as directional, not converged):**
+
+- Both methods improve monotonically with LR over the swept range; neither has turned over, so the optimum for each may be beyond the swept endpoint (QLoRA > 1e-4, qfura > 2e-4).
+- At this ~58-step budget QLoRA leads qfura by ~5–6 points on base HumanEval at each method's best LR (56.1 vs 50.6). This mirrors the *math* finding elsewhere in this doc (QLoRA's lower initial quant error tracks a small code/math advantage), and contrasts with commonsense (where qfura wins). More steps / full-data runs are needed before drawing a firm qfura-vs-QLoRA conclusion on code.
+- qfura's best LR (2e-4) is ~2× QLoRA's best (1e-4), consistent with BTT's small trainable core preferring a larger step size.
+
+### Bugs fixed during this run
+
+1. **nan loss from all-masked microbatches** (commit `18436e9`). ~6% of CodeFeedback samples have a prompt ≥ `max_seq_len`; after truncation every token is masked (`IGNORE_INDEX`), so the cross-entropy loss is 0/0 = nan. Under gradient accumulation a single such microbatch poisons the accumulated step and every weight becomes nan from step 1 (survivable at batch 1, fatal at bs 1×128). Fixed by dropping zero-trainable-token examples in `SupervisedDataset` (shared by qlora + qfura) plus gradient clipping (`max_grad_norm=1.0`) with a non-finite-grad skip guard.
+2. **eval KV-cache OOM** (commit `6d67e2b`). The merged/materialized dense Mixtral (~87 GiB bf16) leaves negative KV-cache room on a single 95 GiB H100. `eval_code.sh` now loads the eval model **4-bit via bitsandbytes** (~25 GiB, +53 GiB KV cache) with a capped `max_model_len`. 4-bit eval is also faithful to how both methods train (NF4-quantized frozen weights).
