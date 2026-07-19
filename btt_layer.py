@@ -537,7 +537,13 @@ def get_blocktt_target_module_names(blocktt_type):
         return ("q_proj", "k_proj", "v_proj", "o_proj")
     if blocktt_type == "5mod_lora":
         return ("q_proj", "k_proj", "v_proj", "up_proj", "down_proj")
-    raise ValueError("blocktt_type must be one of: all, mlp, attn, 5mod_lora")
+    if blocktt_type == "mixtral_all":
+        # Mixtral-8x7B MoE: attention uses *_proj, experts use w1 (gate),
+        # w2 (down), w3 (up). The router (block_sparse_moe.gate) is excluded.
+        return ("q_proj", "k_proj", "v_proj", "o_proj", "w1", "w2", "w3")
+    raise ValueError(
+        "blocktt_type must be one of: all, mlp, attn, 5mod_lora, mixtral_all"
+    )
 
 
 def configure_blocktt_trainability(
