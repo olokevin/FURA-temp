@@ -10,7 +10,7 @@
 #
 # Override env vars: MAX_STEPS, lr, lora_r, lora_alpha, seed,
 # per_device_train_batch_size, gradient_accumulation_steps, model_max_length,
-# DEVICE, no_wandb.
+# no_wandb.
 
 pwd
 hostname

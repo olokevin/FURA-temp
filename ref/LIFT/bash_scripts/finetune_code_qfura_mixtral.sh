@@ -12,7 +12,7 @@
 # bf16 model never fully materialises on GPU.
 #
 # Override env vars: MAX_STEPS, lr, seed, per_device_train_batch_size,
-# gradient_accumulation_steps, model_max_length, DEVICE, no_wandb.
+# gradient_accumulation_steps, model_max_length, no_wandb.
 
 pwd
 hostname
