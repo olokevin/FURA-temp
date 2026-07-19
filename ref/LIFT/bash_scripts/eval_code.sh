@@ -3,8 +3,7 @@
 # wrapping the vendored PiSSA pipeline: gen_vllm -> code_process -> evalplus.
 #
 # Usage:
-#   bash bash_scripts/eval_code.sh CKPT=<checkpoint_dir> [base_model=<hf_model>] \
-#        [ADAPTER=1] [DEVICE=<gpu>]
+#   bash bash_scripts/eval_code.sh CKPT=<checkpoint_dir> [base_model=<hf_model>]
 #
 # Checkpoint layouts (auto-detected, override with EVAL_PREFER=best):
 #   qfura:  <CKPT>/last/            -> dense HF model, has config.json (load directly)
@@ -21,7 +20,7 @@ CKPT=""
 base_model="${base_model:-mistralai/Mixtral-8x7B-v0.1}"
 
 usage() {
-    echo "Usage: bash bash_scripts/eval_code.sh CKPT=<checkpoint_dir> [base_model=<hf_model>] [DEVICE=<gpu>]"
+    echo "Usage: bash bash_scripts/eval_code.sh CKPT=<checkpoint_dir> [base_model=<hf_model>]"
 }
 
 for arg in "$@"; do
@@ -82,6 +81,11 @@ mkdir -p "$OUT_DIR"
 RESP="${OUT_DIR}/python_response.jsonl"
 
 cd "$PROJECT_DIR"
+
+# Re-runs: gen_vllm.py appends to its output file, and a stale humaneval.jsonl
+# would be scored instead of this run's. Remove both before regenerating.
+[ -f "$RESP" ] && rm -f "$RESP"
+[ -f "${OUT_DIR}/humaneval.jsonl" ] && rm -f "${OUT_DIR}/humaneval.jsonl"
 
 # --- 1. Generate completions on the HumanEval (python) test split via vLLM ---
 uv run --project "$PROJECT_DIR" python "${PISSA_UTILS}/gen_vllm.py" \
