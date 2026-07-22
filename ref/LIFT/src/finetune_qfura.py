@@ -743,26 +743,56 @@ def main():
             _base -= p.numel()
     sysmon.base_params = _base
 
+    def _build_dense_state_dict_from_live_model(live_model):
+        # Build a dense HF state_dict WITHOUT mutating the live model and WITHOUT
+        # a CPU deepcopy. materialize_dense_weight() is read-only and runs the
+        # NF4 dequant + einsum on the layer's own (GPU) device — fast — then we
+        # move each dense weight to CPU. Non-BTT params are copied to CPU as-is.
+        # (A prior deepcopy().to("cpu") + materialize_btt_to_linear forced the
+        # dequant+einsum onto CPU for all 896 layers, which stalled for >15 min.)
+        # NOTE: import BTTLayer locally — main() imports it conditionally on the
+        # calib branch, which makes the module-global a *local* of main and
+        # leaves it unbound in this closure when that branch didn't run.
+        from btt_layer import BTTLayer
+        btt_names = {}
+        for name, mod in live_model.named_modules():
+            if isinstance(mod, BTTLayer):
+                btt_names[name] = mod
+        sd = {}
+        # Non-BTT params/buffers: anything not under a BTT submodule.
+        btt_prefixes = tuple(n + "." for n in btt_names)
+        for pname, tensor in live_model.state_dict().items():
+            if pname.startswith(btt_prefixes):
+                continue  # replaced by the materialized dense weight below
+            sd[pname] = tensor.detach().to("cpu")
+        # BTT layers -> dense <name>.weight (+ optional <name>.bias).
+        for name, mod in btt_names.items():
+            with torch.no_grad():
+                dense_w = mod.materialize_dense_weight().detach().to("cpu")
+            sd[f"{name}.weight"] = dense_w
+            if getattr(mod, "bias", None) is not None:
+                sd[f"{name}.bias"] = mod.bias.detach().to("cpu")
+        return sd
+
     def _write_snapshot(step):
         # Rolling intermediate checkpoint for an external HumanEval evaluator.
-        # materialize_btt_to_linear MUTATES its model in place, so we deep-copy
-        # the unwrapped model to CPU first and never touch the live training
-        # model. Write to a temp dir, atomically rename to snap/step_<N>, then
-        # update snap/LATEST last (the evaluator only acts once LATEST advances).
-        # Older step_* dirs are removed so disk holds ~one snapshot at a time.
+        # Write to a temp dir, atomically rename to snap/step_<N>, then update
+        # snap/LATEST last (the evaluator only acts once LATEST advances). Older
+        # step_* dirs are removed so disk holds ~one snapshot at a time.
         if not (accelerator.is_main_process and args.output_dir):
             return
         snap_root = os.path.join(args.output_dir, "snap")
         os.makedirs(snap_root, exist_ok=True)
-        src = copy.deepcopy(accelerator.unwrap_model(model)).to("cpu")
-        materialize_btt_to_linear(src, offload_device=torch.device("cpu"))
+        live_model = accelerator.unwrap_model(model)
+        state_dict = _build_dense_state_dict_from_live_model(live_model)
         tmp_dir = os.path.join(snap_root, f".tmp_step_{step}")
         if os.path.isdir(tmp_dir):
             shutil.rmtree(tmp_dir, ignore_errors=True)
         os.makedirs(tmp_dir, exist_ok=True)
-        torch.save(src.state_dict(), os.path.join(tmp_dir, "pytorch_model.bin"))
-        src.config.to_json_file(os.path.join(tmp_dir, "config.json"))
+        torch.save(state_dict, os.path.join(tmp_dir, "pytorch_model.bin"))
+        live_model.config.to_json_file(os.path.join(tmp_dir, "config.json"))
         tokenizer.save_pretrained(tmp_dir)
+        del state_dict
         final_dir = os.path.join(snap_root, f"step_{step}")
         if os.path.isdir(final_dir):
             shutil.rmtree(final_dir, ignore_errors=True)
@@ -773,7 +803,6 @@ def main():
                 shutil.rmtree(os.path.join(snap_root, name), ignore_errors=True)
         with open(os.path.join(snap_root, "LATEST"), "w") as f:
             f.write(str(step))
-        del src
         print_rank_0(f"[snapshot] wrote {final_dir}", args.global_rank)
 
     def train_epoch(epoch):
