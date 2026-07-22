@@ -59,6 +59,12 @@ def evaluate_snapshot(ckpt_dir, base_model):
     """Run eval_code.sh on ckpt_dir; return (base, plus) pass@1."""
     env = dict(os.environ)
     env["base_model"] = base_model
+    # The eval GPU may be SHARED with other users' jobs. The 4-bit model is only
+    # ~25 GiB, so cap gpu_memory_utilization low enough that vLLM tolerates an
+    # already-partly-used card (default 0.9 demands ~84 GiB free and fails when
+    # another process holds even ~15 GiB). 0.55 -> ~51 GiB, ample for 25 GiB
+    # weights + KV at max_model_len 2048. Overridable via the watcher's env.
+    env.setdefault("GEN_GPU_MEM_UTIL", "0.55")
     # CUDA_VISIBLE_DEVICES is inherited from the watcher's environment.
     proc = subprocess.run(
         ["bash", EVAL_SH, f"CKPT={ckpt_dir}"],
@@ -94,6 +100,15 @@ def main():
     import wandb
     run = wandb.init(project=args.wandb_project, id=args.wandb_run_id,
                      resume="allow")
+    # The training process advances this run's global wandb step continuously
+    # (train_loss at step=completed_steps). wandb DROPS any log whose step is
+    # <= the current max step, so a second process logging eval at step=100
+    # while training is already at step=450 gets silently discarded. Use a
+    # dedicated x-axis metric (eval_step) instead of the global step so the
+    # HumanEval curve plots at the correct training step regardless of ordering.
+    wandb.define_metric("eval_step")
+    wandb.define_metric("humaneval_pass@1", step_metric="eval_step")
+    wandb.define_metric("humaneval_plus_pass@1", step_metric="eval_step")
     print(f"[watcher] resumed wandb run {args.wandb_run_id} "
           f"(project {args.wandb_project})", flush=True)
 
@@ -128,9 +143,9 @@ def main():
                 print(f"[watcher] evaluating step {pending} ...", flush=True)
                 base, plus, rc = evaluate_snapshot(aside, args.base_model)
                 if base is not None:
-                    run.log({"humaneval_pass@1": base,
-                             "humaneval_plus_pass@1": plus if plus is not None else float("nan")},
-                            step=pending)
+                    run.log({"eval_step": pending,
+                             "humaneval_pass@1": base,
+                             "humaneval_plus_pass@1": plus if plus is not None else float("nan")})
                     print(f"[watcher] step {pending}: HumanEval={base} "
                           f"HumanEval+={plus} (logged to wandb)", flush=True)
                 else:
@@ -152,9 +167,9 @@ def main():
                       f"{args.final_steps}", flush=True)
                 base, plus, rc = evaluate_snapshot(last_dir, args.base_model)
                 if base is not None:
-                    run.log({"humaneval_pass@1": base,
-                             "humaneval_plus_pass@1": plus if plus is not None else float("nan")},
-                            step=args.final_steps)
+                    run.log({"eval_step": args.final_steps,
+                             "humaneval_pass@1": base,
+                             "humaneval_plus_pass@1": plus if plus is not None else float("nan")})
                     print(f"[watcher] final step {args.final_steps}: "
                           f"HumanEval={base} HumanEval+={plus}", flush=True)
                 evaluated.add(args.final_steps)
