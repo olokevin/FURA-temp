@@ -112,6 +112,15 @@ def materialize_btt_to_linear(model, offload_device=None):
 
     for name, btt_module in replacements:
         dense_weight = btt_module.materialize_dense_weight()
+        # Always save the dense HF checkpoint in bf16, regardless of the
+        # trainable dtype. With --trainable_param_dtype fp32 the trainable BTT
+        # cores (and thus their materialized weights) are fp32, producing a
+        # MIXED-dtype checkpoint (fp32 trainable-side layers, bf16 elsewhere).
+        # bitsandbytes + vLLM then crash at load ("Both operands must be same
+        # dtype. Got bf16 and fp32"). Uniform bf16 keeps the checkpoint loadable
+        # and halves its on-disk size, with negligible quality impact.
+        if dense_weight.dtype == torch.float32:
+            dense_weight = dense_weight.to(torch.bfloat16)
         target_device = offload_device if offload_device is not None else dense_weight.device
         linear = nn.Linear(
             btt_module.in_features,

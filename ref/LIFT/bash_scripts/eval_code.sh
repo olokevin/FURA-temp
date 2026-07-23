@@ -116,6 +116,13 @@ cd "$PROJECT_DIR"
 GEN_QUANT="${GEN_QUANT:-bitsandbytes}"
 GEN_GPU_MEM_UTIL="${GEN_GPU_MEM_UTIL:-0.9}"
 GEN_MAX_MODEL_LEN="${GEN_MAX_MODEL_LEN:-2048}"
+# Force a uniform compute dtype. A qfura checkpoint trained with
+# --trainable_param_dtype fp32 materializes MIXED-dtype dense weights (fp32
+# trainable-side layers, bf16 elsewhere); loading that with bitsandbytes crashes
+# in a triton matmul ("Both operands must be same dtype. Got bf16 and fp32").
+# Casting everything to bfloat16 on load makes it uniform. (bf16-trained
+# checkpoints are unaffected.) Overridable via GEN_DTYPE.
+GEN_DTYPE="${GEN_DTYPE:-bfloat16}"
 gen_quant_flag=()
 if [ -n "$GEN_QUANT" ]; then
     gen_quant_flag=(--quantization "$GEN_QUANT")
@@ -130,6 +137,7 @@ uv run --project "$PROJECT_DIR" python "${PISSA_UTILS}/gen_vllm.py" \
     --max_tokens 1024 \
     --gpu_memory_utilization "$GEN_GPU_MEM_UTIL" \
     --max_model_len "$GEN_MAX_MODEL_LEN" \
+    --dtype "$GEN_DTYPE" \
     "${gen_quant_flag[@]}" \
     2> >(tee "${OUT_DIR}/eval_err.log" >&2) | tee "${OUT_DIR}/eval.log"
 
