@@ -398,7 +398,47 @@ Best per method in **bold**. HumanEval(+) uses evalplus's extra test cases.
 - At this ~58-step budget QLoRA leads qfura by ~5–6 points on base HumanEval at each method's best LR (56.1 vs 50.6). This mirrors the *math* finding elsewhere in this doc (QLoRA's lower initial quant error tracks a small code/math advantage), and contrasts with commonsense (where qfura wins). More steps / full-data runs are needed before drawing a firm qfura-vs-QLoRA conclusion on code.
 - qfura's best LR (2e-4) is ~2× QLoRA's best (1e-4), consistent with BTT's small trainable core preferring a larger step size.
 
+### Aligned-optimizer qfura (AdamW + fp32, matching QLoRA)
+
+The table above compares qfura and QLoRA under their **project-default** optimizers,
+which are *not* the same: QLoRA uses full **AdamW + fp32** adapters, while qfura
+(inheriting the 70B launcher default) used **paged 8-bit AdamW + bf16** cores.
+That optimizer/precision mismatch — not the method — turns out to account for
+most of the apparent qfura-vs-QLoRA code gap. Re-running qfura with QLoRA's
+optimizer (`--optimizer adamw --trainable_param_dtype fp32`), everything else
+identical (8k slice, ~58 steps, bs 128, seq 512, the CLAUDE.md qfura decomposition
+defaults):
+
+| Method                | LR   | HumanEval | HumanEval+ |
+| --------------------- | ---- | --------- | ---------- |
+| qfura (AdamW + fp32)  | 1e-4 | **56.1**  | 49.4       |
+| qfura (AdamW + fp32)  | 2e-4 | **56.1**  | 49.4       |
+| qfura (AdamW + fp32)  | 3e-4 | 51.8      | 43.9       |
+| qfura (AdamW + fp32)  | 5e-4 | 51.8      | 44.5       |
+
+**Aligning the optimizer raised qfura by 5–6 points at both shared LRs** —
+1e-4: 50.0 → **56.1** (+6.1), 2e-4: 50.6 → **56.1** (+5.5) — vs the 8-bit/bf16
+rows in the table above. In other words, **the 8-bit paged AdamW + bf16 setting
+was handicapping qfura**, and with the optimizer matched to QLoRA, qfura reaches
+QLoRA's own best on this benchmark (**56.1 = 56.1**). This overturns the
+"QLoRA leads qfura by ~5–6 points" reading of the default-optimizer table: at
+parity of optimizer, the two are even.
+
+qfura now **peaks at LR 1e-4/2e-4 (56.1) then declines** (3e-4/5e-4 = 51.8) — a
+clean optimum, unlike the still-climbing 8-bit sweep. Its best LR under the
+aligned optimizer is *lower* than the 8-bit sweep suggested. (These remain
+short-run, single-seed numbers; treat the qfura ≈ QLoRA parity as directional.)
+
+### Full-data note (QLoRA, 777 steps)
+
+Scaling QLoRA (lr 2e-5) from the 8k slice to the **full** CodeFeedback set
+(~104K samples, ~13× the data, 777 steps) lifts and stabilizes HumanEval. The
+mid-training curve (materialized-checkpoint eval every 100 steps): step 400 =
+53.7, 500 = **57.9**, 600 = 57.3, final (777) = 55.5 — vs its 8k score of 51.2.
+More data clearly helps, peaking around step 500 (57.9) before settling at 55.5.
+
 ### Bugs fixed during this run
 
 1. **nan loss from all-masked microbatches** (commit `18436e9`). ~6% of CodeFeedback samples have a prompt ≥ `max_seq_len`; after truncation every token is masked (`IGNORE_INDEX`), so the cross-entropy loss is 0/0 = nan. Under gradient accumulation a single such microbatch poisons the accumulated step and every weight becomes nan from step 1 (survivable at batch 1, fatal at bs 1×128). Fixed by dropping zero-trainable-token examples in `SupervisedDataset` (shared by qlora + qfura) plus gradient clipping (`max_grad_norm=1.0`) with a non-finite-grad skip guard.
 2. **eval KV-cache OOM** (commit `6d67e2b`). The merged/materialized dense Mixtral (~87 GiB bf16) leaves negative KV-cache room on a single 95 GiB H100. `eval_code.sh` now loads the eval model **4-bit via bitsandbytes** (~25 GiB, +53 GiB KV cache) with a capped `max_model_len`. 4-bit eval is also faithful to how both methods train (NF4-quantized frozen weights).
+3. **fp32 qfura checkpoint → eval dtype crash** (commit `eaddeb3`). With `--trainable_param_dtype fp32` (used for the aligned-optimizer sweep), the trainable BTT cores are fp32, so `materialize_btt_to_linear` produced a **mixed fp32/bf16** dense checkpoint. Loading that under bitsandbytes+vLLM crashes in a triton matmul (`Both operands must be same dtype. Got bf16 and fp32`). Fixed by always materializing the dense checkpoint as **uniform bf16** regardless of training precision. (An `eval_code.sh` `GEN_DTYPE=bfloat16` cast alone did *not* fix it — bitsandbytes preserves the source dtype — so the fix is at the save side.)
