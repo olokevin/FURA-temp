@@ -79,6 +79,8 @@ from utils.model_utils import (
     print_throughput
 )
 
+from utils.optim_utils import add_optimizer_args, build_optimizer
+
 from utils.data_utils import SupervisedDataset, DataCollatorForSupervisedDataset
 
 from tools.system_metrics import SysMon
@@ -375,6 +377,8 @@ def parse_args():
         help="Disable Weights & Biases logging.",
     )
 
+    add_optimizer_args(parser)
+
     args = parser.parse_args()
 
     return args
@@ -550,10 +554,14 @@ def main():
        args, model, args.weight_decay, args.learning_rate
     )
 
-    optimizer = torch.optim.AdamW(
-        optimizer_grouped_parameters,
-        lr=args.learning_rate,
-        betas=(0.9, 0.95),
+    optimizer = build_optimizer(
+        args,
+        model,
+        lambda: torch.optim.AdamW(
+            optimizer_grouped_parameters,
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+        ),
     )
 
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)

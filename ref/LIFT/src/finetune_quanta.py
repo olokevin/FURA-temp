@@ -5,21 +5,14 @@ import os
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
 )
-# Add repo root to path for btt_layer.py
+# Add repo root to path for quanta_layer.py
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir, os.path.pardir))
 )
-# Ensure `compress` (src/compress) is importable alongside the existing repo-root path.
-_LIFT_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir, os.path.pardir))
-_LIFT_SRC = os.path.join(_LIFT_REPO_ROOT, "src")
-if os.path.isdir(_LIFT_SRC) and _LIFT_SRC not in sys.path:
-    sys.path.insert(0, _LIFT_SRC)
 
 import copy
 import time
 import torch
-import json
-import random
 import math
 import argparse
 from tqdm.auto import tqdm
@@ -49,79 +42,53 @@ from utils.model_utils import (
     make_model_gradient_checkpointing_compatible,
 )
 
-from utils.optim_utils import add_optimizer_args, build_optimizer
-
 from utils.data_utils import SupervisedDataset, DataCollatorForSupervisedDataset
 
-from btt_layer import (
-    BTTLayer,
-    convert_linear_to_btt,
-    configure_blocktt_trainability,
-    get_blocktt_target_module_names,
-    normalize_trainable_blocktt_cores_,
-    resolve_blocktt_decomp_modes,
+from quanta_layer import (
+    QuanTALayer,
+    convert_linear_to_quanta,
+    configure_quanta_trainability,
+    get_quanta_target_module_names,
+    parse_dims,
 )
 
 from tools.system_metrics import SysMon
 
-from compress_integration import (
-    add_calibrated_btt_args,
-    validate_calibrated_btt_args,
-    apply_calibrated_btt,
-    build_calib_loader,
-    save_calibrated_btt_checkpoint,
-)
 
-
-def resolve_blocktt_rank(rank_arg):
-    """Parse --blocktt_rank: 'full' or a positive integer."""
-    if rank_arg == "full":
-        return "full"
-    try:
-        rank = int(rank_arg)
-    except ValueError as exc:
-        raise ValueError("--blocktt_rank must be 'full' or a positive integer") from exc
-    if rank <= 0:
-        raise ValueError("--blocktt_rank must be > 0")
-    return rank
-
-
-def materialize_btt_to_linear(model):
-    """Replace all BTTLayer modules with nn.Linear containing materialized dense weights.
-
-    This makes the model saveable/loadable as a standard HF checkpoint.
-    """
+def materialize_quanta_to_linear(model):
+    """Replace all QuanTALayer modules with nn.Linear containing the merged dense
+    weight (W0 + T - S) so the saved HF checkpoint is a standard model.  Mirrors
+    materialize_svd_to_linear."""
     replacements = []
     for name, module in model.named_modules():
-        if isinstance(module, BTTLayer):
+        if isinstance(module, QuanTALayer):
             replacements.append((name, module))
 
-    for name, btt_module in replacements:
-        dense_weight = btt_module.materialize_dense_weight()
+    for name, quanta_module in replacements:
+        dense_weight = quanta_module.materialize_dense_weight()
         linear = nn.Linear(
-            btt_module.in_features,
-            btt_module.out_features,
-            bias=btt_module.bias is not None,
+            quanta_module.in_features,
+            quanta_module.out_features,
+            bias=quanta_module.bias is not None,
             device=dense_weight.device,
             dtype=dense_weight.dtype,
         )
         linear.weight.data.copy_(dense_weight)
-        if btt_module.bias is not None:
-            linear.bias.data.copy_(btt_module.bias.data)
+        if quanta_module.bias is not None:
+            linear.bias.data.copy_(quanta_module.bias.data)
 
-        # Navigate to parent and replace the child
         parts = name.split(".")
         parent = model
         for part in parts[:-1]:
             parent = getattr(parent, part)
         setattr(parent, parts[-1], linear)
 
-    print(f"Materialized {len(replacements)} BTTLayer modules to nn.Linear")
+    print(f"Materialized {len(replacements)} QuanTALayer modules to nn.Linear")
     return model
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="BlockTT Fine-Tuning (LIFT benchmark)")
+    parser = argparse.ArgumentParser(description="QuanTA Fine-Tuning (LIFT benchmark)")
     parser.add_argument(
         "--data_path",
         nargs="*",
@@ -149,7 +116,7 @@ def parse_args():
         help="Skip best-model tracking, save only the last model.")
     parser.add_argument("--eval_step", type=int, default=80)
     parser.add_argument("--eval_delay", type=int_or_float, default=0)
-    parser.add_argument("--learning_rate", type=float, default=2e-4)
+    parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_train_epochs", type=int, default=3)
     parser.add_argument(
@@ -183,80 +150,34 @@ def parse_args():
         "--use_flash_attn", type=str, default="False",
     )
 
-    # BlockTT-specific arguments
-    parser.add_argument("--trainable_type", type=str, default="all",
-        choices=["all", "mlp", "attn", "5mod_lora"],
-        help="Which modules to convert to BTT: all (7), mlp (3), attn (4), 5mod_lora (q/k/v/up/down — matches LoRA's 5-mod default)")
-    parser.add_argument("--decomp_mode", type=str, default="input_one_block",
-        help="BTT decomposition mode: input_one_block, output_one_block, or dict literal")
-    parser.add_argument("--blocktt_rank", type=str, default="full",
-        help="BTT rank: 'full' for lossless or a positive integer")
-    parser.add_argument("--train_position", type=str, default="small",
-        choices=["small", "large", "both"],
-        help="Which TT core to train: small, large, both")
+    # QuanTA-specific arguments
     parser.add_argument(
-        "--s_merged_to",
-        type=str,
-        default="frozen",
-        choices=[
-            "frozen",
-            "trainable",
-            "output",
-            "input",
-            "split",
-            "keep_frozen",
-            "keep_trainable",
-        ],
-        help=(
-            "Where to merge/keep singular values during SVD init: "
-            "frozen, trainable, output, input, split, keep_frozen, keep_trainable"
-        ),
+        "--trainable_type", type=str, default="qv",
+        choices=["qv", "qkvud", "all", "attn"],
+        help="Which modules to convert to QuanTA. Default 'qv' = q_proj/v_proj "
+             "(paper's commonsense recipe, Table E.3).",
     )
-    parser.add_argument("--blocktt_normalize_after_update", action="store_true",
-        help="Normalize trainable BTT cores after each optimizer step")
-    parser.add_argument("--blocktt_factorize_by_head", action="store_true", default=True,
-        help="Align attention BTT blocks with head structure")
-    parser.add_argument("--no_blocktt_factorize_by_head", action="store_false",
-        dest="blocktt_factorize_by_head")
     parser.add_argument(
-        "--blocktt_input_factorization",
-        type=str,
-        default=None,
-        help=(
-            "Override input-side (n,b) factorization. Accepts: 'head' / 'closest' / "
-            "'n,b' as a scalar applied to all modules, or a JSON/Python dict literal "
-            "mapping group names (qkv, o, mlp_upgate, mlp_down) or leaf names "
-            "(q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj) to "
-            "individual specs. Example: '{\"qkv\":\"head\",\"o\":\"head\","
-            "\"mlp_upgate\":\"512,8\",\"mlp_down\":\"1792,8\"}'. When set, this "
-            "overrides --blocktt_factorize_by_head for any module covered by the spec."
-        ),
+        "--quanta_dims", type=str, default="16-8-8-4",
+        help="Per-axis decomposition of the hidden dim (e.g. '16-8-8-4' for N=4). "
+             "prod(dims) must be >= max(in,out) of each adapted matrix.",
     )
-    parser.add_argument("--no_train_bias", action="store_true",
-        help="Freeze BTT biases")
+    parser.add_argument("--train_bias", action="store_true",
+        help="Also train biases on QuanTA layers (default: frozen).")
     parser.add_argument(
-        "--wandb_project",
-        type=str,
-        default=None,
+        "--wandb_project", type=str, default=None,
         help="Weights & Biases project name.",
     )
     parser.add_argument(
-        "--wandb_run_name",
-        type=str,
-        default=None,
+        "--wandb_run_name", type=str, default=None,
         help="Weights & Biases run name.",
     )
     parser.add_argument(
-        "--no_wandb",
-        action="store_true",
+        "--no_wandb", action="store_true",
         help="Disable Weights & Biases logging.",
     )
 
-    add_calibrated_btt_args(parser, hyphen_style=False)
-    add_optimizer_args(parser)
-
     args = parser.parse_args()
-    validate_calibrated_btt_args(args, argv=sys.argv[1:], hyphen_style=False)
     return args
 
 
@@ -264,7 +185,6 @@ def main():
     args = parse_args()
 
     use_wandb = not args.no_wandb
-    # Initialize accelerator
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -272,7 +192,7 @@ def main():
     )
     if not torch.cuda.is_available() or accelerator.device.type != "cuda":
         raise RuntimeError(
-            "finetune_blocktt.py requires CUDA so BlockTT conversion SVD runs on GPU. "
+            "finetune_quanta.py requires CUDA. "
             f"Current accelerator device: {accelerator.device}."
         )
 
@@ -313,7 +233,6 @@ def main():
     model = model.to(accelerator.device)
 
     # --- Dataset ---
-    # Hoisted above decomposition so calibration can reuse train_dataset/collator.
     if len(args.data_path) == 1 and ".json" in args.data_path[0]:
         train_dataset = SupervisedDataset(
             data_path=args.data_path[0],
@@ -345,69 +264,35 @@ def main():
             collate_fn=data_collator,
         )
 
-    # --- BlockTT conversion ---
-    if getattr(args, "calib_mode", "none") != "none":
-        calib_loader = build_calib_loader(
-            args,
-            tokenizer=tokenizer,
-            training_dataset=train_dataset,
-            training_collate_fn=data_collator,
-            hyphen_style=False,
-        )
-        model, calib_stats = apply_calibrated_btt(
-            model, args, calib_loader=calib_loader, hyphen_style=False,
-        )
-        print(f"[calib-btt] installed {calib_stats['num_btt_layers']} BTT layers")
-    else:
-        blocktt_rank = resolve_blocktt_rank(args.blocktt_rank)
-        target_modules = get_blocktt_target_module_names(args.trainable_type)
-        train_bias = not args.no_train_bias
+    # Pretrained parameter footprint (counted BEFORE conversion; QuanTA moves the base
+    # weight W0 into a frozen *buffer* and adds trainable tensors, so the post-conversion
+    # parameter total no longer reflects the base model).
+    pretrained_param_count = sum(p.numel() for p in model.parameters())
 
-        # Resolve decomp mode (may be scalar or per-module dict)
-        decomp_mode, module_decomp_modes = resolve_blocktt_decomp_modes(
-            args.decomp_mode,
-            include_names=target_modules,
-            default_mode="input_one_block",
-        )
+    # --- QuanTA conversion ---
+    target_modules = get_quanta_target_module_names(args.trainable_type)
+    dims = parse_dims(args.quanta_dims)
 
-        converted_modules = convert_linear_to_btt(
-            model,
-            btt_rank=blocktt_rank,
-            decomp_mode=module_decomp_modes if module_decomp_modes is not None else decomp_mode,
-            init_mode="default",
-            include_names=target_modules,
-            skip_names=("lm_head",),
-            lr_act=False,
-            s_merged_to=args.s_merged_to,
-            train_position=args.train_position,
-            factorize_by_head=args.blocktt_factorize_by_head,
-            model_config=model.config,
-            input_factorization=args.blocktt_input_factorization,
-        )
-        stats = configure_blocktt_trainability(
-            model,
-            train_bias=train_bias,
-            train_position=args.train_position,
-            train_singular_values=(args.s_merged_to == "keep_trainable"),
-        )
-        if stats["num_btt_layers"] == 0:
-            raise ValueError("No layers were converted to BTT; check --trainable_type.")
+    converted_modules = convert_linear_to_quanta(
+        model,
+        dims=dims,
+        skip_names=("lm_head",),
+        include_names=target_modules,
+    )
+    stats = configure_quanta_trainability(model, train_bias=args.train_bias)
+    if stats["num_quanta_layers"] == 0:
+        raise ValueError("No layers were converted to QuanTA; check --trainable_type.")
 
-        print(f"Converted modules: {len(converted_modules)}")
-        print(
-            f"Trainable params: {stats['trainable_param_count']:,} / "
-            f"{stats['total_param_count']:,} "
-            f"({100 * stats['trainable_param_count'] / stats['total_param_count']:.4f}%)"
-        )
-        print(
-            f"Tuned cores: left={stats['tuned_left_cores']}, "
-            f"right={stats['tuned_right_cores']}, biases={stats['tuned_biases']}"
-        )
-
-        if args.train_position == "both":
-            for p in model.parameters():
-                p.requires_grad = True
-            print("[train_position=both] all parameters set trainable (incl. lm_head, embeddings)")
+    print(f"Converted modules: {len(converted_modules)}")
+    print(
+        f"Trainable params: {stats['trainable_param_count']:,} / "
+        f"{stats['total_param_count']:,} "
+        f"({100 * stats['trainable_param_count'] / stats['total_param_count']:.4f}%)"
+    )
+    print(
+        f"QuanTA layers: {stats['num_quanta_layers']}, dims={dims}, "
+        f"tensors={stats['tuned_tensors']}, biases={stats['tuned_biases']}"
+    )
 
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -417,17 +302,13 @@ def main():
         model = make_model_gradient_checkpointing_compatible(model)
         model.gradient_checkpointing_enable()
 
-    # --- Optimizer: AdamW (default) or Muon on the trainable TT cores ---
+    # --- Optimizer: standard AdamW on trainable QuanTA tensors ---
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = build_optimizer(
-        args,
-        model,
-        lambda: torch.optim.AdamW(
-            trainable_params,
-            lr=args.learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=args.weight_decay,
-        ),
+    optimizer = torch.optim.AdamW(
+        trainable_params,
+        lr=args.learning_rate,
+        betas=(0.9, 0.95),
+        weight_decay=args.weight_decay,
     )
 
     num_update_steps_per_epoch = math.ceil(
@@ -447,13 +328,14 @@ def main():
         args.per_device_train_batch_size * args.gradient_accumulation_steps
     )
 
-    print("***** Running BlockTT training *****")
+    print("***** Running QuanTA training *****")
     print(f"  Num examples = {len(train_dataloader)}")
     print(f"  Num Epochs = {args.num_train_epochs}")
     print(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
     print(f"  Total train batch size (w. accumulation) = {total_batch_size}")
     print(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     print(f"  Total optimization steps = {max_train_steps}")
+    print(f"  QuanTA dims = {dims}")
 
     progress_bar = tqdm(
         range(max_train_steps), disable=not accelerator.is_local_main_process
@@ -467,7 +349,6 @@ def main():
         num_training_steps=max_train_steps,
     )
 
-    # Prepare with accelerator
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
@@ -476,29 +357,15 @@ def main():
 
     best_model = None
 
-    # blocktt_rank can be 'full', an integer (legacy non-calibrated path), or
-    # a float in (0, 1] (calibrated path, where it is a compression ratio).
-    # For SysMon's `rank` metadata field, accept int strings; everything else
-    # (including 'full' and float ratios) is logged as None.
-    _rank_arg = args.blocktt_rank
-    if _rank_arg == "full":
-        _sysmon_rank = None
-    else:
-        try:
-            _sysmon_rank = int(_rank_arg)
-        except (TypeError, ValueError):
-            _sysmon_rank = None
+    # base_params = pretrained footprint (captured before conversion). QuanTA moves W0
+    # into a buffer and adds trainable tensors + frozen S buffers, so trainable_pct /
+    # stored_extra_pct in SysMon are measured against the true base model.
     sysmon = SysMon(
         out_dir=args.output_dir or ".",
-        method="blocktt",
-        rank=_sysmon_rank,
-        base_params=sum(p.numel() for p in model.parameters()),
+        method="quanta",
+        rank=None,
+        base_params=pretrained_param_count,
     )
-    _base = sysmon.base_params
-    for name, p in model.named_parameters():
-        if "btt_" in name:
-            _base -= p.numel()
-    sysmon.base_params = _base
 
     def train_epoch(epoch):
         nonlocal best_model, best_eval_loss
@@ -514,9 +381,6 @@ def main():
             if accelerator.sync_gradients:
                 _t0 = time.time()
                 optimizer.step()
-                if args.blocktt_normalize_after_update:
-                    unwrapped = accelerator.unwrap_model(model)
-                    normalize_trainable_blocktt_cores_(unwrapped)
                 lr_scheduler.step()
                 optimizer.zero_grad()
                 if torch.cuda.is_available():
@@ -603,26 +467,37 @@ def main():
         * args.gradient_accumulation_steps
         * args.max_seq_len
     )
+    # "Extra parameters stored on top of the pretrained model": QuanTA keeps W0 intact
+    # and adds the trainable tensors T plus their frozen copies S (both are net-new
+    # storage; the merged weight is materialized only at save time).
+    unwrapped = accelerator.unwrap_model(model)
+    trainable_adapter = 0
+    frozen_extra = 0
+    for _, mod in unwrapped.named_modules():
+        if isinstance(mod, QuanTALayer):
+            for t in mod.t_tensors:
+                trainable_adapter += t.numel()
+            for s_name in mod._s_names:
+                frozen_extra += getattr(mod, s_name).numel()
+    extra_params = trainable_adapter + frozen_extra
     sysmon.dump(
         model,
         extra={
             "effective_tokens_per_step": effective_tokens,
             "learning_rate": args.learning_rate,
-            "train_position": args.train_position,
-            "decomp_mode": args.decomp_mode,
-            "s_merged_to": args.s_merged_to,
+            "quanta_dims": args.quanta_dims,
+            "trainable_type": args.trainable_type,
+            "extra_params": extra_params,
+            "extra_params_pct": 100.0 * extra_params / pretrained_param_count,
+            "trainable_params_true": trainable_adapter,
+            "trainable_pct_true": 100.0 * trainable_adapter / pretrained_param_count,
         },
     )
 
     # --- Save policy: write last/ always, best/ if best-tracking ran.
     def _save_one(src_model, sub_folder):
-        if getattr(args, "calib_mode", "none") != "none":
-            target_dir = os.path.join(args.output_dir, sub_folder)
-            os.makedirs(target_dir, exist_ok=True)
-            save_calibrated_btt_checkpoint(src_model, target_dir, tokenizer)
-        else:
-            materialize_btt_to_linear(src_model)
-            save_hf_format(src_model, tokenizer, args, sub_folder=sub_folder)
+        materialize_quanta_to_linear(src_model)
+        save_hf_format(src_model, tokenizer, args, sub_folder=sub_folder)
 
     if args.output_dir is not None and accelerator.is_main_process:
         accelerator.wait_for_everyone()

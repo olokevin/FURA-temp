@@ -32,12 +32,39 @@ s_merged_to="${s_merged_to:-keep_trainable}"
 blocktt_rank="${blocktt_rank:-full}"
 trainable_type="${trainable_type:-all}"
 lr="${lr:-2e-4}"
+wd="${wd:-0.}"
 seed="${seed:-43}"
 blocktt_input_factorization="${blocktt_input_factorization:-}"
+
+# Tag output dir with wd only when non-zero, so default (wd=0) runs keep their
+# original path and the weight-decay sweep runs land in distinct directories.
+wd_tag=""
+case "${wd}" in
+    0|0.|0.0|"") ;;
+    *) wd_tag="-wd_${wd}" ;;
+esac
 MAX_STEPS="${MAX_STEPS:-0}"
 PER_DEVICE_TRAIN_BS="${PER_DEVICE_TRAIN_BS:-8}"
 GRAD_ACC_STEPS="${GRAD_ACC_STEPS:-2}"
 model_tag="${MODEL##*/}"
+
+# --- optimizer selection (adamw | muon). Muon orthogonalizes the trainable BTT
+# --- cores (btt_l/btt_r) and leaves btt_s / biases / norms on AdamW.
+OPTIMIZER="${OPTIMIZER:-adamw}"
+opt_args=( --optimizer "${OPTIMIZER}" )
+opt_tag=""
+_add_opt_arg() { if [ -n "$2" ]; then opt_args+=( "$1" "$2" ); fi; return 0; }
+if [ "${OPTIMIZER}" != "adamw" ]; then
+    opt_tag="-opt_${OPTIMIZER}"
+    _add_opt_arg --muon_lr_adam "${MUON_LR_ADAM}"
+    _add_opt_arg --muon_lr_embedding "${MUON_LR_EMBEDDING}"
+    _add_opt_arg --muon_momentum "${MUON_MOMENTUM}"
+    _add_opt_arg --muon_ns_steps "${MUON_NS_STEPS}"
+    _add_opt_arg --muon_polar_method "${MUON_POLAR_METHOD}"
+    _add_opt_arg --muon_structured_ortho_method "${MUON_STRUCTURED_ORTHO_METHOD}"
+    _add_opt_arg --muon_norm_method "${MUON_NORM_METHOD}"
+    _add_opt_arg --muon_adamw_betas "${MUON_ADAMW_BETAS}"
+fi
 
 # --- calibrated BTT knobs (set calib_mode=v2_bp to enable) ---
 calib_mode="${calib_mode:-none}"
@@ -52,7 +79,7 @@ export WANDB_RESUME="${WANDB_RESUME:-allow}"
 
 echo $MODEL
 
-OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/commonsense/${MODEL}/blocktt-calib_${calib_mode}-lr_${lr}-decomp_${decomp_mode}_pos_${train_position}_smerge_${s_merged_to}-seed_${seed}}"
+OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/commonsense/${MODEL}/blocktt${opt_tag}-calib_${calib_mode}-lr_${lr}${wd_tag}-decomp_${decomp_mode}_pos_${train_position}_smerge_${s_merged_to}-seed_${seed}}"
 run_name="${run_name:-$(basename "$OUTPUT")}"
 
 mkdir -p $OUTPUT
@@ -62,6 +89,11 @@ cd ${SRC_DIR}
 extra_args=()
 if [ -n "${blocktt_input_factorization}" ]; then
     extra_args+=( --blocktt_input_factorization "${blocktt_input_factorization}" )
+fi
+# Renormalize the trainable BTT cores after every optimizer step. Only coherent
+# when the scale lives elsewhere (s_merged_to=keep_*, i.e. a separate btt_s).
+if [ "${BLOCKTT_NORMALIZE:-0}" = "1" ]; then
+    extra_args+=( --blocktt_normalize_after_update )
 fi
 
 accelerate launch \
@@ -75,11 +107,11 @@ accelerate launch \
     --logging_steps 10 \
     --max_seq_len 2048 \
     --learning_rate ${lr} \
-    --weight_decay 0. \
+    --weight_decay ${wd} \
     --num_train_epochs ${num_train_epochs:-3} \
     --mixed_precision bf16 \
     --gradient_accumulation_steps ${GRAD_ACC_STEPS} \
-    --lr_scheduler_type linear \
+    --lr_scheduler_type ${LR_SCHEDULER:-linear} \
     --num_warmup_steps 0.03 \
     --seed ${seed} \
     --gradient_checkpointing \
@@ -100,6 +132,7 @@ accelerate launch \
     --wandb_run_name "${run_name}" \
     --max_steps ${MAX_STEPS} \
     "${extra_args[@]}" \
+    "${opt_args[@]}" \
     --output_dir $OUTPUT 2> >(tee $OUTPUT/err.log >&2) | tee $OUTPUT/training.log
 
     # --val_set_size 120 \

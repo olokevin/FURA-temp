@@ -32,6 +32,24 @@ seed="${seed:-43}"
 MAX_STEPS="${MAX_STEPS:-0}"
 model_tag="${MODEL##*/}"
 
+# --- optimizer selection (adamw | muon). Muon orthogonalizes the LoRA factor
+# --- matrices inside the decoder and leaves everything else on AdamW.
+OPTIMIZER="${OPTIMIZER:-adamw}"
+opt_args=( --optimizer "${OPTIMIZER}" )
+opt_tag=""
+_add_opt_arg() { if [ -n "$2" ]; then opt_args+=( "$1" "$2" ); fi; return 0; }
+if [ "${OPTIMIZER}" != "adamw" ]; then
+    opt_tag="-opt_${OPTIMIZER}"
+    _add_opt_arg --muon_lr_adam "${MUON_LR_ADAM}"
+    _add_opt_arg --muon_lr_embedding "${MUON_LR_EMBEDDING}"
+    _add_opt_arg --muon_momentum "${MUON_MOMENTUM}"
+    _add_opt_arg --muon_ns_steps "${MUON_NS_STEPS}"
+    _add_opt_arg --muon_polar_method "${MUON_POLAR_METHOD}"
+    _add_opt_arg --muon_structured_ortho_method "${MUON_STRUCTURED_ORTHO_METHOD}"
+    _add_opt_arg --muon_norm_method "${MUON_NORM_METHOD}"
+    _add_opt_arg --muon_adamw_betas "${MUON_ADAMW_BETAS}"
+fi
+
 # target_modules: space-separated list. Default = original 5-module set so legacy runs are unchanged.
 target_modules="${target_modules:-q_proj k_proj v_proj up_proj down_proj}"
 # Tag the run when overridden (count tokens; 5 -> default = no tag, 7 -> "7mod", else "Nmod").
@@ -43,13 +61,13 @@ else
 fi
 
 wandb_project="${wandb_project:-commonsense-${model_tag}}"
-run_name="${run_name:-${adapter_name}-lr_${lr}-rank_${lora_r}${_tm_tag}-seed_${seed}}"
+run_name="${run_name:-${adapter_name}${opt_tag}-lr_${lr}-rank_${lora_r}${_tm_tag}-seed_${seed}}"
 wandb_run_id="${wandb_run_id:-$(python -c 'import wandb; print(wandb.util.generate_id())')}"
 
 export WANDB_RUN_ID="${wandb_run_id}"
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 
-OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/commonsense/${MODEL}/${adapter_name}-lr_${lr}-rank_${lora_r}${_tm_tag}-seed_${seed}}"
+OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/commonsense/${MODEL}/${adapter_name}${opt_tag}-lr_${lr}-rank_${lora_r}${_tm_tag}-seed_${seed}}"
 mkdir -p $OUTPUT
 
 cd $SRC_DIR
@@ -69,7 +87,7 @@ accelerate launch \
     --num_train_epochs ${num_train_epochs:-3} \
     --mixed_precision bf16 \
     --gradient_accumulation_steps 2 \
-    --lr_scheduler_type linear \
+    --lr_scheduler_type ${LR_SCHEDULER:-linear} \
     --num_warmup_steps 0.03 \
     --seed ${seed} \
     --gradient_checkpointing \
@@ -84,6 +102,7 @@ accelerate launch \
     --wandb_run_name "${run_name}" \
     --max_steps ${MAX_STEPS} \
     --save_interval 100000 \
+    "${opt_args[@]}" \
     --output_dir $OUTPUT 2> >(tee $OUTPUT/err.log >&2) | tee $OUTPUT/training.log
 
 if [ "${MAX_STEPS}" = "0" ]; then

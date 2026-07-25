@@ -56,6 +56,8 @@ from utils.model_utils import (
     make_model_gradient_checkpointing_compatible,
 )
 
+from utils.optim_utils import add_optimizer_args, build_optimizer
+
 from utils.data_utils import SupervisedDataset, DataCollatorForSupervisedDataset
 
 from compress_integration import (
@@ -553,6 +555,7 @@ def parse_args():
     )
 
     add_calibrated_btt_args(parser, hyphen_style=False)
+    add_optimizer_args(parser)
 
     args = parser.parse_args()
 
@@ -742,16 +745,25 @@ def main():
 
     ## Init optimizer
     if 'sparse' in args.peft_tuner:
+        if getattr(args, "optimizer", "adamw") != "adamw":
+            raise ValueError(
+                f"--optimizer {args.optimizer} is not supported with "
+                f"--peft_tuner {args.peft_tuner} (sparse tuners need SparseAdamW)."
+            )
         from sparseAdam import SparseAdamW
         optimizer = SparseAdamW(
             optimizer_grouped_parameters, lr=args.learning_rate, betas=(0.9, 0.95), mask_type=args.mask_type, args=args
         )
     else:
         # Prepare optimizer and scheduler
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=args.learning_rate,
-            betas=(0.9, 0.95),
+        optimizer = build_optimizer(
+            args,
+            model,
+            lambda: torch.optim.AdamW(
+                model.parameters(),
+                lr=args.learning_rate,
+                betas=(0.9, 0.95),
+            ),
         )
 
     

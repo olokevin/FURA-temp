@@ -23,9 +23,37 @@ OUTPUT_SRC_DIR=/data/yequan/fura/lift    # MODIFY THIS LINE
 
 MODEL="${MODEL:-meta-llama/Meta-Llama-3-8B}"
 lr="${lr:-2e-4}"
+wd="${wd:-0.}"
 seed="${seed:-43}"
 model_tag="${MODEL##*/}"
 MAX_STEPS="${MAX_STEPS:-0}"
+
+# Tag output dir with wd only when non-zero, so the default (wd=0) runs keep their
+# original path and the weight-decay sweep runs land in distinct directories.
+wd_tag=""
+case "${wd}" in
+    0|0.|0.0|"") ;;
+    *) wd_tag="-wd_${wd}" ;;
+esac
+
+# --- optimizer selection (adamw | muon). Muon updates decoder weight matrices
+# --- with orthogonalized momentum and leaves embeddings/lm_head/norms on AdamW.
+OPTIMIZER="${OPTIMIZER:-adamw}"
+opt_args=( --optimizer "${OPTIMIZER}" )
+opt_tag=""
+_add_opt_arg() { if [ -n "$2" ]; then opt_args+=( "$1" "$2" ); fi; return 0; }
+if [ "${OPTIMIZER}" != "adamw" ]; then
+    opt_tag="-opt_${OPTIMIZER}"
+    _add_opt_arg --muon_lr_adam "${MUON_LR_ADAM}"
+    _add_opt_arg --muon_lr_embedding "${MUON_LR_EMBEDDING}"
+    _add_opt_arg --muon_momentum "${MUON_MOMENTUM}"
+    _add_opt_arg --muon_ns_steps "${MUON_NS_STEPS}"
+    _add_opt_arg --muon_polar_method "${MUON_POLAR_METHOD}"
+    _add_opt_arg --muon_structured_ortho_method "${MUON_STRUCTURED_ORTHO_METHOD}"
+    _add_opt_arg --muon_norm_method "${MUON_NORM_METHOD}"
+    _add_opt_arg --muon_adamw_betas "${MUON_ADAMW_BETAS}"
+fi
+
 wandb_project="${wandb_project:-commonsense-${model_tag}}"
 wandb_run_id="${wandb_run_id:-$(python -c 'import wandb; print(wandb.util.generate_id())')}"
 export WANDB_RUN_ID="${wandb_run_id}"
@@ -35,7 +63,7 @@ echo $MODEL
 
 peft_tuner=sparse
 
-OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/commonsense/${MODEL}/full-lr_${lr}-seed_${seed}}"
+OUTPUT="${OUTPUT:-${OUTPUT_SRC_DIR}/commonsense/${MODEL}/full${opt_tag}-lr_${lr}${wd_tag}-seed_${seed}}"
 run_name="${run_name:-$(basename "$OUTPUT")}"
 mkdir -p $OUTPUT
 
@@ -57,10 +85,10 @@ accelerate launch \
     --logging_steps 10 \
     --max_seq_len 2048 \
     --learning_rate ${lr} \
-    --weight_decay 0. \
+    --weight_decay ${wd} \
     --num_train_epochs ${num_train_epochs:-3} \
     --mixed_precision bf16 \
-    --lr_scheduler_type linear \
+    --lr_scheduler_type ${LR_SCHEDULER:-linear} \
     --num_warmup_steps 0.03 \
     --seed ${seed} \
     --gradient_checkpointing \
@@ -73,6 +101,7 @@ accelerate launch \
     --wandb_project "${wandb_project}" \
     --wandb_run_name "${run_name}" \
     --max_steps ${MAX_STEPS} \
+    "${opt_args[@]}" \
     --output_dir $OUTPUT 2> >(tee $OUTPUT/err.log >&2) | tee $OUTPUT/training.log
 
 if [ "${MAX_STEPS}" = "0" ]; then
